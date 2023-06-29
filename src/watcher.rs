@@ -1,17 +1,19 @@
 use super::subscribe::Observer;
 use futures_util::StreamExt;
-use inotify::{EventMask, EventStream, Inotify, WatchMask};
+use inotify::{EventMask, Inotify, WatchMask};
 use std::path::PathBuf;
-use tokio::sync::mpsc::{self, channel};
+use tokio::sync::mpsc::channel;
 use tokio::sync::mpsc::{Receiver, Sender};
 
 const MPSC_BUFFER_SIZE: usize = 16;
+const STREAM_BUFFER_SIZE: usize = 1024;
 
 /// Watcher keeps its eyes on the specified directory, noticing all subscribers when changes occur in its directory subtree.
 ///
 /// Watcher is fully depending on the crate `inotify`.
 pub struct Watcher {
     /// The path to be watched, which could not be modified after initiation.
+    #[allow(unused)]
     path: PathBuf,
 
     /// Receiver for inotify.
@@ -21,6 +23,8 @@ pub struct Watcher {
     txs: Vec<Sender<FileEvent>>,
 }
 
+/// File event is used to describe changes happened in the file system.
+/// It's a wrapper of the event from inotify.
 #[derive(Clone, Debug)]
 pub struct FileEvent {
     path: PathBuf,
@@ -46,7 +50,7 @@ impl Watcher {
 
             // establish the stream for inotify, using mpsc to relay the event
             // cannot use `Vec` as buffer
-            let mut buffer = [0; 1024];
+            let mut buffer = [0; STREAM_BUFFER_SIZE];
             let mut stream = inotify.into_event_stream(&mut buffer).unwrap();
             while let Some(e) = stream.next().await {
                 match e {

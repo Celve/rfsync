@@ -4,6 +4,13 @@ Vector time pair consists of the vector modification time and the vector synchro
 
 For directory, the vector synchronization time of it is the element-wise minimum of the synchronization times of its children, and the vector modification time of it is the element-wise maximum of the modification times of its children. 
 
+## Comparison
+We could regard modification time vector as an outline of the file history. Therefore, the comparison of file history is done by the comparison of modification time vector. The comparison details are listed as follows:
+- If the vectors are identical, so are the histories. 
+- If all elements in **u** are less than or equal to the corresponding elements in **v**, then the history represented by **u** is a prefix of the history represented by **v**.
+- If all elements in **v** are less than or equal to the corresponding elements in **u**, then the history represented by **v** is a prefix of the history represented by **u**.
+- Otherwise, neither history is a prefix of the other, then the conflict happens.
+
 ## Sync Algorithm
 The sync algorithm is based on the vector time pair. Suppose a file is existed on both server A and server B. The algorithm is described as follows:
 

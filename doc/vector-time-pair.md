@@ -36,7 +36,7 @@ sync(A -> B, F, m, s) {
   if m(A) <= s(B) {
     // the deleted F(B) was derived from F(A)
     do nothing
-  } else if c(A) > s(B) {
+  } else if c(A) !<= s(B) {
     // F(A) and F(B) were created independently
     // sync(B -> A, F) is meaningless
     copy F(A) to F(B)

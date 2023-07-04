@@ -60,10 +60,10 @@ Where the creation time is the first element in the file's modification history.
 
 ```
 sync(B <- A, F, m, s) {
-  if s(A) <= c(B) {
+  if m(A) <= s(B) {
     // the F(B) was created after F(A) was deleted
     do nothing
-  } else if s(B) <= m(A) {
+  } else if m(B) <= s(A) {
     delete F(B)
   } else {
     // they diverge, and to keep it or not cannot be determined
@@ -110,7 +110,7 @@ sync(B <- A, D, m, S) {
 
 ```
 sync(B <- A, D, m, s) {
-  if m(A) <= m(B) {
+  if m(A) <= s(B) {
     // the D(B) was created after D(A) was deleted
     // cannot use s(A) here, because it's not the maximum of the subtree
     do nothing

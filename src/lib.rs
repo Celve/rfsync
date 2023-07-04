@@ -1,4 +1,8 @@
-pub mod subscribe;
+pub mod op;
+pub mod remote;
+pub mod server;
+pub mod sync;
+pub mod time;
 pub mod watcher;
 
 pub fn add(left: usize, right: usize) -> usize {

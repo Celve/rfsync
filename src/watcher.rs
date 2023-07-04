@@ -1,9 +1,9 @@
-use super::subscribe::Observer;
 use futures_util::StreamExt;
 use inotify::{EventMask, Inotify, WatchMask};
 use std::path::PathBuf;
 use tokio::sync::mpsc::channel;
 use tokio::sync::mpsc::{Receiver, Sender};
+use tracing::info;
 
 const MPSC_BUFFER_SIZE: usize = 16;
 const STREAM_BUFFER_SIZE: usize = 1024;
@@ -27,8 +27,15 @@ pub struct Watcher {
 /// It's a wrapper of the event from inotify.
 #[derive(Clone, Debug)]
 pub struct FileEvent {
-    path: PathBuf,
-    event: EventMask,
+    pub path: PathBuf,
+    pub ty: FileEventType,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum FileEventType {
+    Create,
+    Delete,
+    Modify,
 }
 
 impl Watcher {
@@ -55,10 +62,12 @@ impl Watcher {
             while let Some(e) = stream.next().await {
                 match e {
                     Ok(event) => {
+                        info!("receive event {:?}", event);
+
                         // we maintain the event and the path inside the file event
                         tx.send(FileEvent::new(
                             event.name.map_or(PathBuf::new(), |x| x.into()),
-                            event.mask,
+                            event.mask.into(),
                         ))
                         .await
                         .expect("Failed to send event to the channel.");
@@ -88,12 +97,8 @@ impl Watcher {
             }
         });
     }
-}
 
-impl Observer for Watcher {
-    type Event = FileEvent;
-
-    fn observe(&mut self) -> Receiver<Self::Event> {
+    pub fn subscribe(&mut self) -> Receiver<FileEvent> {
         let (tx, rx) = channel::<FileEvent>(MPSC_BUFFER_SIZE);
         self.txs.push(tx);
         rx
@@ -101,7 +106,22 @@ impl Observer for Watcher {
 }
 
 impl FileEvent {
-    pub fn new(path: PathBuf, event: EventMask) -> Self {
-        Self { path, event }
+    pub fn new(path: PathBuf, ty: FileEventType) -> Self {
+        Self { path, ty }
+    }
+}
+
+impl From<EventMask> for FileEventType {
+    fn from(value: EventMask) -> Self {
+        // it might contains something like `IS_DIR`, therefore we could not use the exact match
+        if value.contains(EventMask::CREATE) || value.contains(EventMask::MOVED_TO) {
+            Self::Create
+        } else if value.contains(EventMask::DELETE) || value.contains(EventMask::MOVED_FROM) {
+            Self::Delete
+        } else if value.contains(EventMask::MODIFY) {
+            Self::Modify
+        } else {
+            panic!("Unknown event type {:?}.", value)
+        }
     }
 }

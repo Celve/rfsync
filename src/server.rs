@@ -1,11 +1,12 @@
 use std::{
     collections::HashMap,
     fmt::Debug,
+    mem::MaybeUninit,
     net::SocketAddr,
     path::PathBuf,
     sync::{
         atomic::{AtomicUsize, Ordering},
-        Arc,
+        Arc, Weak,
     },
 };
 
@@ -14,7 +15,7 @@ use tokio::{
     fs::{self, metadata},
     io::{AsyncReadExt, AsyncWriteExt},
     net::TcpListener,
-    sync::RwLock,
+    sync::{Mutex, RwLock},
     task::JoinHandle,
 };
 use tracing::{event, info, instrument, Level};
@@ -29,7 +30,8 @@ use crate::{
 pub struct Server {
     pub addr: SocketAddr,
     pub path: PathBuf,
-    cells: RwLock<HashMap<PathBuf, Arc<SyncCell>>>,
+    cells: RwLock<HashMap<PathBuf, Weak<SyncCell>>>,
+    root: Mutex<MaybeUninit<Arc<SyncCell>>>,
 
     /// The `time - 1` represents the last time the server is updated.
     pub time: AtomicUsize,
@@ -42,11 +44,13 @@ impl Server {
             addr,
             path: path.clone(),
             cells: RwLock::new(HashMap::new()),
+            root: Mutex::new(MaybeUninit::uninit()),
             time: AtomicUsize::new(0),
             id,
         });
 
-        server.new_sc(&PathBuf::new(), None, CellType::Dir).await;
+        let cell = server.new_sc(&PathBuf::new(), None, CellType::Dir).await;
+        server.root.lock().await.write(cell);
 
         server
     }
@@ -229,8 +233,7 @@ impl Server {
                     let req = bincode::deserialize::<Request>(&buf).unwrap();
                     match req {
                         Request::ReadCell(path) => {
-                            let server_guard = server.cells.read().await;
-                            let cell = server_guard.get(&path).unwrap();
+                            let cell = server.get_sc(&path).await.unwrap();
                             let res = Response::Cell(cell.into_rc(server.addr).await);
                             let res = bincode::serialize(&res).unwrap();
                             stream.write(&res).await.unwrap();
@@ -256,7 +259,7 @@ impl Server {
     pub async fn new_sc(
         self: &Arc<Server>,
         path: &PathBuf,
-        parent: Option<Arc<SyncCell>>,
+        parent: Option<Weak<SyncCell>>,
         ty: CellType,
     ) -> Arc<SyncCell> {
         let time = self.time.fetch_add(1, Ordering::AcqRel);
@@ -274,11 +277,17 @@ impl Server {
 
         // maintain the file tree
         if let Some(parent) = parent {
-            parent.lock().await.children.push(cell.clone());
+            parent
+                .upgrade()
+                .unwrap()
+                .lock()
+                .await
+                .children
+                .push(cell.clone());
         }
 
         // add to the server
-        self.add_sc(cell.clone()).await;
+        self.add_sc(&cell).await;
 
         cell
     }
@@ -298,7 +307,7 @@ impl Server {
         if let Some(cell) = cell {
             cell
         } else {
-            self.new_sc(path, Some(parent), ty).await
+            self.new_sc(path, Some(Arc::downgrade(&parent)), ty).await
         }
     }
 
@@ -315,7 +324,7 @@ impl Server {
                 .get_sc(&parent_path)
                 .await
                 .expect(format!("parent not found: {:?}", parent_path).as_str());
-            self.new_sc(path, Some(parent), ty).await
+            self.new_sc(path, Some(Arc::downgrade(&parent)), ty).await
         }
     }
 }
@@ -323,12 +332,19 @@ impl Server {
 impl Server {
     /// Get the `SyncCell` from the server. Return `None` when there is none.
     pub async fn get_sc(&self, path: &PathBuf) -> Option<Arc<SyncCell>> {
-        self.cells.read().await.get(path).map(|cell| cell.clone())
+        self.cells
+            .read()
+            .await
+            .get(path)
+            .map(|cell| cell.upgrade().unwrap().clone())
     }
 
     /// Add the `SyncCell` to the server `HashMap`.
-    pub async fn add_sc(&self, cell: Arc<SyncCell>) {
-        self.cells.write().await.insert(cell.path.clone(), cell);
+    pub async fn add_sc(&self, cell: &Arc<SyncCell>) {
+        self.cells
+            .write()
+            .await
+            .insert(cell.path.clone(), Arc::downgrade(cell));
     }
 }
 

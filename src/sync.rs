@@ -1,18 +1,13 @@
 use std::{
-    cell::Cell,
-    cmp::max,
-    collections::{HashMap, HashSet},
+    collections::HashSet,
     fmt::Debug,
     net::SocketAddr,
     path::PathBuf,
-    sync::{atomic::Ordering, Arc},
+    sync::{Arc, Weak},
 };
 
 use async_recursion::async_recursion;
-use futures_util::{
-    future::{join_all, BoxFuture},
-    FutureExt, StreamExt,
-};
+use futures_util::FutureExt;
 use serde::{Deserialize, Serialize};
 use tokio::{
     fs::{self, File},
@@ -42,7 +37,7 @@ pub struct SyncCell {
     /// The path of the file, relative to the root sync dir.
     pub(super) path: PathBuf,
 
-    pub(super) parent: Option<Arc<SyncCell>>,
+    pub(super) parent: Option<Weak<SyncCell>>,
 
     pub(super) server: Arc<Server>,
 
@@ -200,7 +195,7 @@ impl SyncCell {
     pub fn new(
         server: &Arc<Server>,
         path: &PathBuf,
-        parent: Option<Arc<SyncCell>>,
+        parent: Option<Weak<SyncCell>>,
         ty: CellType,
         modif: VecTime,
         sync: VecTime,
@@ -269,11 +264,11 @@ impl SyncCell {
             (self_guard.modif.clone(), self_guard.sync.clone())
         };
         let mut last = self.clone();
-        while let Some(curr) = last.parent.clone() {
+        while let Some(curr) = last.parent.as_ref().map(|c| c.upgrade().unwrap()) {
             let mut curr_guard = curr.lock().await;
             curr_guard.modif.merge_max(&modif);
             curr_guard.sync.merge_min(&sync);
-            last = curr.clone();
+            last = curr.clone()
         }
     }
 

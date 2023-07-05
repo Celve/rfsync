@@ -3,7 +3,7 @@ use std::{net::SocketAddr, path::PathBuf};
 use serde::{Deserialize, Serialize};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
-    net::{TcpSocket, TcpStream, UdpSocket},
+    net::TcpStream,
 };
 
 use crate::{

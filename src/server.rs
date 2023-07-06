@@ -3,6 +3,7 @@ use std::{
     fmt::Debug,
     mem::MaybeUninit,
     net::SocketAddr,
+    ops::Sub,
     path::PathBuf,
     sync::{
         atomic::{AtomicUsize, Ordering},
@@ -22,7 +23,7 @@ use tracing::{info, instrument};
 
 use crate::{
     op::{Request, Response},
-    path::{RelPath, RootPath},
+    path::{AbsPath, RelPath, RootPath},
     peer::{Peer, PeerList},
     remote::RemoteCell,
     sync::{CellType, SyncCell},
@@ -59,6 +60,10 @@ impl Server {
             .new_sc(&RelPath::default(), None, CellType::Dir)
             .await;
         cell.clone().watch();
+
+        info!("create {:?}", cell);
+
+        // put the cell inside the placeholder
         server.placeholder.lock().await.write(cell);
 
         server
@@ -74,6 +79,30 @@ impl Server {
 
 // interface
 impl Server {
+    pub async fn init(self: Arc<Self>) {
+        let cell = self.get_sc(&RelPath::default()).await.unwrap();
+        let abs = cell.path();
+        let dir = fs::read_dir(abs.as_path_buf()).await;
+        if let Ok(mut stream) = dir {
+            while let Some(entry) = stream.next_entry().await.unwrap() {
+                let path = entry.path();
+                let ty = if path.is_dir() {
+                    CellType::Dir
+                } else {
+                    CellType::File
+                };
+                let path = AbsPath::new(path).sub(&self.root).unwrap();
+
+                // recurse down and collect children
+                let child = Self::create(self.clone(), &path, ty).await;
+                cell.lock()
+                    .await
+                    .children
+                    .insert(child.rel.clone(), child.clone());
+            }
+        }
+    }
+
     /// Create a new file or directory. Increase the server time while creating.
     ///
     /// If it's a directory, it would recurse down, adding all of its component to the server.
@@ -99,7 +128,7 @@ impl Server {
             self.clone().make_sc_from_path(path, ty).await
         };
 
-        info!("create cell {:?}", cell);
+        info!("create {:?}", cell);
 
         cell.clone().watch();
 
@@ -219,7 +248,8 @@ impl Server {
                         }
                         Request::ReadFile(path) => {
                             // TODO: I should not use unwrap here
-                            let path = server.root.concat(&path);
+                            // let path = server.root.concat(&path);
+                            let path = &server.root + &path;
                             let mut file = File::open(path.as_path_buf()).await.unwrap();
 
                             // TODO: use frame to optimize
@@ -306,18 +336,18 @@ impl Server {
 
     /// Fetch the `SyncCell` from server according to the given path.
     /// If there is none, create a new one with server time increased.
-    pub async fn make_sc_from_path(self: Arc<Self>, path: &RelPath, ty: CellType) -> Arc<SyncCell> {
+    pub async fn make_sc_from_path(self: Arc<Self>, rel: &RelPath, ty: CellType) -> Arc<SyncCell> {
         // TODO: check parent instead of checking server
-        let cell = self.get_sc(path).await;
+        let cell = self.get_sc(rel).await;
         if let Some(cell) = cell {
             cell
         } else {
-            let parent_path = path.parent();
+            let parent_rel = rel.parent();
             let parent = self
-                .get_sc(&parent_path)
+                .get_sc(&parent_rel)
                 .await
-                .expect(format!("parent not found: {:?}", parent_path).as_str());
-            self.new_sc(path, Some(Arc::downgrade(&parent)), ty).await
+                .expect(format!("parent not found: {:?}", parent_rel).as_str());
+            self.new_sc(rel, Some(Arc::downgrade(&parent)), ty).await
         }
     }
 }

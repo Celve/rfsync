@@ -220,7 +220,7 @@ impl SyncCell {
     }
 
     pub fn path(&self) -> AbsPath {
-        self.server.root.concat(&self.rel)
+        &self.server.root.clone() + &self.rel
     }
 
     /// Write content in buffer to the beginning of the given file.
@@ -231,7 +231,7 @@ impl SyncCell {
 
     /// Delete the corresponding file in the file system
     pub async fn remove_file(&self) {
-        let path = self.server.root.concat(&self.rel);
+        let path = &self.server.root + &self.rel;
         fs::remove_file(path.as_path_buf()).await.unwrap();
     }
 
@@ -314,7 +314,8 @@ impl SyncCell {
             let rel = event.path;
             match event.ty {
                 FileEventType::Create => {
-                    let abs = server.root.concat(&rel);
+                    // let abs = server.root.concat(&rel);
+                    let abs = &server.root + &rel;
                     let metadata = metadata(abs.as_path_buf()).await;
                     if let Ok(metadata) = metadata {
                         let ty = if metadata.is_dir() {

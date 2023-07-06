@@ -20,7 +20,7 @@ pub struct Watcher {
     root: RootPath,
 
     /// The path to be watched, which could not be modified after intit
-    relative: RelPath,
+    rel: RelPath,
 
     /// Sender for inotify.
     tx: Sender<FileEvent>,
@@ -50,7 +50,7 @@ impl Watcher {
 
         let watcher = Arc::new(Self {
             root,
-            relative,
+            rel: relative,
             tx: tx.clone(),
             txs: Mutex::new(Vec::new()),
         });
@@ -69,7 +69,7 @@ impl Watcher {
     async fn run_inotify(self: Arc<Self>) {
         // init the inotify instance with the help of Linux
         let inotify = Inotify::init().expect("Failed to initialize inotify.");
-        let path = self.root.concat(&self.relative);
+        let path = &self.root + &self.rel;
         inotify
             .watches()
             .add(
@@ -94,9 +94,7 @@ impl Watcher {
                         break;
                     }
 
-                    let path = self
-                        .relative
-                        .concat(&event.name.map_or(RelPath::default(), |x| x.into()));
+                    let path = &self.rel + &event.name.map_or(RelPath::default(), |x| x.into());
 
                     // we maintain the event and the path inside the file event
                     self.tx
@@ -134,7 +132,7 @@ impl Debug for Watcher {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Watcher")
             .field("root", &self.root)
-            .field("relative", &self.relative)
+            .field("relative", &self.rel)
             .finish()
     }
 }

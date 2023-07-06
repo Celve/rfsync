@@ -10,7 +10,12 @@ pub struct RootPath {
 
 /// The `RelativePath` type is only used for the relative path that the watcher is watching.
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct RelativePath {
+pub struct RelPath {
+    path: PathBuf,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct AbsPath {
     path: PathBuf,
 }
 
@@ -19,10 +24,10 @@ impl RootPath {
         Self { path }
     }
 
-    pub fn concat(&self, relative: &RelativePath) -> PathBuf {
+    pub fn concat(&self, relative: &RelPath) -> AbsPath {
         let mut path = self.path.clone();
         path.push(&relative.path);
-        path
+        AbsPath::new(path)
     }
 }
 
@@ -38,36 +43,48 @@ impl From<RootPath> for PathBuf {
     }
 }
 
-impl RelativePath {
+impl RelPath {
     pub fn new(path: PathBuf) -> Self {
         Self { path }
     }
 
-    pub fn concat(&self, other: &Self) -> RelativePath {
+    pub fn concat(&self, other: &Self) -> RelPath {
         let mut path = self.path.clone();
         path.push(&other.path);
-        RelativePath::new(path)
-    }
-
-    pub fn as_path_buf(&self) -> &PathBuf {
-        &self.path
+        RelPath::new(path)
     }
 
     pub fn parent(&self) -> Self {
         let mut path = self.path.clone();
         path.pop();
-        RelativePath::new(path)
+        RelPath::new(path)
     }
 }
 
-impl From<PathBuf> for RelativePath {
+impl From<PathBuf> for RelPath {
     fn from(value: PathBuf) -> Self {
         Self::new(value)
     }
 }
 
-impl From<OsString> for RelativePath {
+impl From<OsString> for RelPath {
     fn from(value: OsString) -> Self {
         Self::new(value.into())
+    }
+}
+
+impl AbsPath {
+    pub fn new(path: PathBuf) -> Self {
+        Self { path }
+    }
+
+    pub fn concat(&self, relative: &RelPath) -> Self {
+        let mut path = self.path.clone();
+        path.push(&relative.path);
+        Self::new(path)
+    }
+
+    pub fn as_path_buf(&self) -> PathBuf {
+        self.path.clone()
     }
 }

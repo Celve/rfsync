@@ -1,12 +1,12 @@
 use serde::{Deserialize, Serialize};
 
-use crate::{path::RelativePath, remote::RemoteCell};
+use crate::{path::RelPath, peer::Peer, remote::RemoteCell};
 
 #[derive(Deserialize, Serialize)]
 pub enum Request {
-    ReadCell(RelativePath),
-    ReadFile(RelativePath),
-    SyncDir(RelativePath),
+    ReadCell(RelPath),
+    ReadFile(RelPath),
+    SyncDir(Peer, RelPath),
 }
 
 #[derive(Deserialize, Serialize)]

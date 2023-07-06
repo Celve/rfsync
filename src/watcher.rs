@@ -7,7 +7,7 @@ use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::sync::Mutex;
 use tracing::{info, instrument};
 
-use crate::path::{RelativePath, RootPath};
+use crate::path::{RelPath, RootPath};
 
 const MPSC_BUFFER_SIZE: usize = 16;
 const STREAM_BUFFER_SIZE: usize = 1024;
@@ -20,7 +20,7 @@ pub struct Watcher {
     root: RootPath,
 
     /// The path to be watched, which could not be modified after intit
-    relative: RelativePath,
+    relative: RelPath,
 
     /// Sender for inotify.
     tx: Sender<FileEvent>,
@@ -33,7 +33,7 @@ pub struct Watcher {
 /// It's a wrapper of the event from inotify.
 #[derive(Clone, Debug)]
 pub struct FileEvent {
-    pub path: RelativePath,
+    pub path: RelPath,
     pub ty: FileEventType,
 }
 
@@ -45,7 +45,7 @@ pub enum FileEventType {
 }
 
 impl Watcher {
-    pub fn new(root: RootPath, relative: RelativePath) -> Arc<Self> {
+    pub fn new(root: RootPath, relative: RelPath) -> Arc<Self> {
         let (tx, rx) = channel::<FileEvent>(MPSC_BUFFER_SIZE);
 
         let watcher = Arc::new(Self {
@@ -73,7 +73,7 @@ impl Watcher {
         inotify
             .watches()
             .add(
-                path.clone(),
+                path.as_path_buf(),
                 WatchMask::CREATE | WatchMask::DELETE | WatchMask::MODIFY | WatchMask::MOVE,
             )
             .unwrap();
@@ -96,7 +96,7 @@ impl Watcher {
 
                     let path = self
                         .relative
-                        .concat(&event.name.map_or(RelativePath::default(), |x| x.into()));
+                        .concat(&event.name.map_or(RelPath::default(), |x| x.into()));
 
                     // we maintain the event and the path inside the file event
                     self.tx
@@ -140,7 +140,7 @@ impl Debug for Watcher {
 }
 
 impl FileEvent {
-    pub fn new(path: RelativePath, ty: FileEventType) -> Self {
+    pub fn new(path: RelPath, ty: FileEventType) -> Self {
         Self { path, ty }
     }
 }

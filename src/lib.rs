@@ -1,5 +1,6 @@
 pub mod op;
 pub mod path;
+pub mod peer;
 pub mod remote;
 pub mod server;
 pub mod sync;

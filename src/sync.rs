@@ -16,7 +16,7 @@ use tokio::{
 use tracing::instrument;
 
 use crate::{
-    path::RelativePath,
+    path::{AbsPath, RelPath},
     remote::RemoteCell,
     server::Server,
     time::VecTime,
@@ -41,7 +41,7 @@ pub enum CellType {
 /// `children` is only used for determining whether to recursing down the tree.
 pub struct SyncCell {
     /// The path of the file, relative to the root sync dir.
-    pub(super) path: RelativePath,
+    pub(super) rel: RelPath,
 
     pub(super) parent: Option<Weak<SyncCell>>,
 
@@ -68,7 +68,7 @@ pub struct SyncCellInner {
     /// The synchronization would only recurse down when it has children.
     /// An empty directory could be regarded as a file.
     /// No difference in synchronization.
-    pub(super) children: HashMap<RelativePath, Arc<SyncCell>>,
+    pub(super) children: HashMap<RelPath, Arc<SyncCell>>,
 }
 
 // sync functions
@@ -219,15 +219,20 @@ impl SyncCell {
         self.lock().await.ty != CellType::None
     }
 
+    pub fn path(&self) -> AbsPath {
+        self.server.root.concat(&self.rel)
+    }
+
     /// Write content in buffer to the beginning of the given file.
     pub async fn write_file(&self, data: &Vec<u8>) {
-        let mut f = File::create(self.path.as_path_buf()).await.unwrap();
+        let mut f = File::create(self.path().as_path_buf()).await.unwrap();
         f.write(data).await.unwrap();
     }
 
     /// Delete the corresponding file in the file system
     pub async fn remove_file(&self) {
-        fs::remove_file(self.path.as_path_buf()).await.unwrap();
+        let path = self.server.root.concat(&self.rel);
+        fs::remove_file(path.as_path_buf()).await.unwrap();
     }
 
     /// Synchronize the meta data with the remote server.
@@ -278,7 +283,7 @@ impl SyncCell {
             children.push((path.clone(), child.lock().await.ty));
         }
         RemoteCell::new(
-            self.path.clone(),
+            self.rel.clone(),
             self_guard.modif.clone(),
             self_guard.sync.clone(),
             self_guard.crt.clone(),
@@ -301,15 +306,16 @@ impl SyncCell {
         let server = self.server.clone();
 
         // begin to watch
-        let watcher = Watcher::new(server.path.clone(), self.path.clone());
+        let watcher = Watcher::new(server.root.clone(), self.rel.clone());
         let mut rx = watcher.subscribe().await;
         watcher.clone().watch();
 
         while let Some(event) = rx.recv().await {
-            let path = event.path;
+            let rel = event.path;
             match event.ty {
                 FileEventType::Create => {
-                    let metadata = metadata(path.as_path_buf()).await;
+                    let abs = server.root.concat(&rel);
+                    let metadata = metadata(abs.as_path_buf()).await;
                     if let Ok(metadata) = metadata {
                         let ty = if metadata.is_dir() {
                             CellType::Dir
@@ -317,15 +323,17 @@ impl SyncCell {
                             CellType::File
                         };
 
-                        server.clone().create(&path, ty).await;
+                        server.clone().create(&rel, ty).await;
+                    } else {
+                        panic!("Failed to get metadata")
                     }
                 }
                 FileEventType::Delete => {
-                    server.clone().remove(&path).await;
-                    server.get_sc(&path).await.unwrap();
+                    server.clone().remove(&rel).await;
+                    server.get_sc(&rel).await.unwrap();
                 }
                 FileEventType::Modify => {
-                    server.clone().modify(&path).await;
+                    server.clone().modify(&rel).await;
                 }
             }
         }
@@ -336,16 +344,16 @@ impl SyncCell {
 impl SyncCell {
     pub fn new(
         server: &Arc<Server>,
-        path: &RelativePath,
+        path: &RelPath,
         parent: Option<Weak<SyncCell>>,
         ty: CellType,
         modif: VecTime,
         sync: VecTime,
         crt: usize,
-        children: HashMap<RelativePath, Arc<SyncCell>>,
+        children: HashMap<RelPath, Arc<SyncCell>>,
     ) -> Arc<Self> {
         let cell = Arc::new(Self {
-            path: path.clone(),
+            rel: path.clone(),
             parent,
             server: server.clone(),
             inner: Mutex::new(SyncCellInner {
@@ -366,7 +374,7 @@ impl Debug for SyncCell {
         let self_guard = self.try_lock();
 
         let mut d = f.debug_struct("SyncCell");
-        d.field("path", &self.path);
+        d.field("path", &self.rel);
 
         if let Ok(self_guard) = self_guard {
             d.field("modif", &self_guard.modif)

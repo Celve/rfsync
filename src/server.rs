@@ -12,26 +12,31 @@ use std::{
 
 use async_recursion::async_recursion;
 use tokio::{
-    fs,
+    fs::{self, File},
     io::{AsyncReadExt, AsyncWriteExt},
     net::TcpListener,
     sync::{Mutex, RwLock},
     task::JoinHandle,
 };
-use tracing::{event, info, instrument, Level};
+use tracing::{info, instrument};
 
 use crate::{
     op::{Request, Response},
-    path::{RelativePath, RootPath},
+    path::{RelPath, RootPath},
+    peer::{Peer, PeerList},
+    remote::RemoteCell,
     sync::{CellType, SyncCell},
     time::VecTime,
 };
 
 pub struct Server {
     pub addr: SocketAddr,
-    pub path: RootPath,
-    cells: RwLock<HashMap<RelativePath, Weak<SyncCell>>>,
-    root: Mutex<MaybeUninit<Arc<SyncCell>>>,
+    pub root: RootPath,
+    map: RwLock<HashMap<RelPath, Weak<SyncCell>>>,
+    placeholder: Mutex<MaybeUninit<Arc<SyncCell>>>,
+
+    /// Other servers.
+    pub peers: RwLock<PeerList>,
 
     /// The `time - 1` represents the last time the server is updated.
     pub time: AtomicUsize,
@@ -42,18 +47,19 @@ impl Server {
     pub async fn new(addr: SocketAddr, path: &PathBuf, id: usize) -> Arc<Self> {
         let server = Arc::new(Self {
             addr,
-            path: path.clone().into(),
-            cells: RwLock::new(HashMap::new()),
-            root: Mutex::new(MaybeUninit::uninit()),
+            root: path.clone().into(),
+            map: RwLock::new(HashMap::new()),
+            placeholder: Mutex::new(MaybeUninit::uninit()),
+            peers: RwLock::new(PeerList::new()),
             time: AtomicUsize::new(0),
             id,
         });
 
         let cell = server
-            .new_sc(&RelativePath::default(), None, CellType::Dir)
+            .new_sc(&RelPath::default(), None, CellType::Dir)
             .await;
         cell.clone().watch();
-        server.root.lock().await.write(cell);
+        server.placeholder.lock().await.write(cell);
 
         server
     }
@@ -73,7 +79,7 @@ impl Server {
     /// If it's a directory, it would recurse down, adding all of its component to the server.
     #[instrument]
     #[async_recursion]
-    pub async fn create(self: Arc<Self>, path: &RelativePath, ty: CellType) -> Arc<SyncCell> {
+    pub async fn create(self: Arc<Self>, path: &RelPath, ty: CellType) -> Arc<SyncCell> {
         let cell = self.get_sc(path).await;
         let cell = if let Some(cell) = cell {
             // it should be deleted before
@@ -99,7 +105,7 @@ impl Server {
 
         // if it's a directory, recurse it down
         if ty == CellType::Dir {
-            let f = fs::read_dir(cell.path.as_path_buf()).await;
+            let f = fs::read_dir(cell.path().as_path_buf()).await;
             let mut cell_guard = cell.lock().await;
             if let Ok(mut stream) = f {
                 while let Some(entry) = stream.next_entry().await.unwrap() {
@@ -109,13 +115,11 @@ impl Server {
                     } else {
                         CellType::File
                     };
-                    let path = RelativePath::new(path);
+                    let path = RelPath::new(path);
 
                     // recurse down and collect children
                     let child = Self::create(self.clone(), &path, ty).await;
-                    cell_guard
-                        .children
-                        .insert(child.path.clone(), child.clone());
+                    cell_guard.children.insert(child.rel.clone(), child.clone());
                 }
             }
         }
@@ -129,7 +133,7 @@ impl Server {
     /// Remove a file or directory because of the notice of the file system.
     #[instrument]
     #[async_recursion]
-    pub async fn remove(self: Arc<Self>, path: &RelativePath) {
+    pub async fn remove(self: Arc<Self>, path: &RelPath) {
         let cell = self.get_sc(path).await;
         if let Some(cell) = cell {
             {
@@ -164,9 +168,9 @@ impl Server {
 
     /// Deal with modification of file.
     #[instrument]
-    pub async fn modify(self: Arc<Self>, path: &RelativePath) {
-        event!(Level::INFO, "local modify: {:?}", path);
+    pub async fn modify(self: Arc<Self>, path: &RelPath) {
         let cell = self.get_sc(path).await;
+        info!("modify {:?}", path);
         if let Some(cell) = cell {
             let mut cell_guard = cell.lock().await;
             cell_guard
@@ -177,6 +181,13 @@ impl Server {
         } else {
             todo!("Modify should modify existing file")
         }
+    }
+
+    /// Deal with synchronization of dir.
+    pub async fn sync(self: Arc<Self>, peer: Peer, path: &RelPath) {
+        let cell = self.make_sc_from_path(path, CellType::Dir).await;
+        let rcell = RemoteCell::from_path(peer.addr, path.clone()).await;
+        cell.sync_cell(rcell).await;
     }
 }
 
@@ -206,8 +217,21 @@ impl Server {
                             let res = bincode::serialize(&res).unwrap();
                             stream.write(&res).await.unwrap();
                         }
-                        Request::ReadFile(_) => todo!(),
-                        Request::SyncDir(_) => todo!(),
+                        Request::ReadFile(path) => {
+                            // TODO: I should not use unwrap here
+                            let path = server.root.concat(&path);
+                            let mut file = File::open(path.as_path_buf()).await.unwrap();
+
+                            // TODO: use frame to optimize
+                            let mut buf = Vec::new();
+                            file.read_to_end(&mut buf).await.unwrap();
+                            let res = Response::File(buf);
+                            let res = bincode::serialize(&res).unwrap();
+                            stream.write(&res).await.unwrap();
+                        }
+                        Request::SyncDir(peer, path) => {
+                            server.sync(peer, &path).await;
+                        }
                     }
                 } else {
                     println!("Find a empty connection");
@@ -226,7 +250,7 @@ impl Server {
     /// It should not be called dor the synchronization job. It's especially designed for  
     pub async fn new_sc(
         self: &Arc<Server>,
-        path: &RelativePath,
+        path: &RelPath,
         parent: Option<Weak<SyncCell>>,
         ty: CellType,
     ) -> Arc<SyncCell> {
@@ -251,7 +275,7 @@ impl Server {
                 .lock()
                 .await
                 .children
-                .insert(cell.path.clone(), cell.clone());
+                .insert(cell.rel.clone(), cell.clone());
         }
 
         // add to the server
@@ -267,7 +291,7 @@ impl Server {
     pub async fn make_sc_from_parent(
         self: Arc<Self>,
         parent: Arc<SyncCell>,
-        relative: &RelativePath,
+        relative: &RelPath,
         ty: CellType,
     ) -> Arc<SyncCell> {
         // TODO: check parent instead of checking server
@@ -282,11 +306,7 @@ impl Server {
 
     /// Fetch the `SyncCell` from server according to the given path.
     /// If there is none, create a new one with server time increased.
-    pub async fn make_sc_from_path(
-        self: Arc<Self>,
-        path: &RelativePath,
-        ty: CellType,
-    ) -> Arc<SyncCell> {
+    pub async fn make_sc_from_path(self: Arc<Self>, path: &RelPath, ty: CellType) -> Arc<SyncCell> {
         // TODO: check parent instead of checking server
         let cell = self.get_sc(path).await;
         if let Some(cell) = cell {
@@ -304,8 +324,8 @@ impl Server {
 
 impl Server {
     /// Get the `SyncCell` from the server. Return `None` when there is none.
-    pub async fn get_sc(&self, path: &RelativePath) -> Option<Arc<SyncCell>> {
-        self.cells
+    pub async fn get_sc(&self, path: &RelPath) -> Option<Arc<SyncCell>> {
+        self.map
             .read()
             .await
             .get(path)
@@ -314,10 +334,10 @@ impl Server {
 
     /// Add the `SyncCell` to the server `HashMap`.
     pub async fn add_sc(&self, cell: &Arc<SyncCell>) {
-        self.cells
+        self.map
             .write()
             .await
-            .insert(cell.path.clone(), Arc::downgrade(cell));
+            .insert(cell.rel.clone(), Arc::downgrade(cell));
     }
 }
 

@@ -4,8 +4,8 @@ use std::{
 };
 
 use clap::Parser;
-use futures_util::future::join_all;
 use rfsync::{
+    path::RootPath,
     peer::{Peer, PeerList},
     server::Server,
 };
@@ -39,11 +39,11 @@ async fn main() {
 
     // init the server
     let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 60000 + cli.id);
-    let server = Server::new(addr, &cli.path, cli.id as usize).await;
+    let path = RootPath::new(cli.path);
+    let server = Server::new(addr, &path, cli.id as usize).await;
     *server.peers.write().await = peer_list;
     server.clone().init().await;
 
-    let handles = server.run();
-    join_all(handles).await;
+    server.run().await.unwrap();
     info!("server {} is closed", cli.id);
 }

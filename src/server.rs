@@ -4,7 +4,6 @@ use std::{
     mem::MaybeUninit,
     net::SocketAddr,
     ops::Sub,
-    path::PathBuf,
     sync::{
         atomic::{AtomicUsize, Ordering},
         Arc, Weak,
@@ -45,7 +44,7 @@ pub struct Server {
 }
 
 impl Server {
-    pub async fn new(addr: SocketAddr, path: &PathBuf, id: usize) -> Arc<Self> {
+    pub async fn new(addr: SocketAddr, path: &RootPath, id: usize) -> Arc<Self> {
         let server = Arc::new(Self {
             addr,
             root: path.clone().into(),
@@ -70,10 +69,8 @@ impl Server {
     }
 
     /// Activate the server.
-    pub fn run(self: &Arc<Self>) -> Vec<JoinHandle<()>> {
-        let mut handles = Vec::new();
-        handles.push(tokio::spawn(self.clone().listen()));
-        handles
+    pub fn run(self: &Arc<Self>) -> JoinHandle<()> {
+        tokio::spawn(self.clone().listen())
     }
 }
 

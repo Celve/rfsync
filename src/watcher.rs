@@ -2,6 +2,7 @@ use futures_util::StreamExt;
 use inotify::{EventMask, Inotify, WatchMask};
 use std::fmt::Debug;
 use std::sync::Arc;
+use tokio::fs;
 use tokio::sync::mpsc::channel;
 use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::sync::Mutex;
@@ -70,6 +71,13 @@ impl Watcher {
         // init the inotify instance with the help of Linux
         let inotify = Inotify::init().expect("Failed to initialize inotify.");
         let path = &self.root + &self.rel;
+
+        if !path.exists().await {
+            fs::create_dir(path.as_path_buf())
+                .await
+                .expect("Failed to create the directory.");
+        }
+
         inotify
             .watches()
             .add(

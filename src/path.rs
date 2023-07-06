@@ -5,6 +5,7 @@ use std::{
 };
 
 use serde::{Deserialize, Serialize};
+use tokio::fs;
 
 /// The `RootPath` type is only used for the root path that the watcher is watching.
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -72,6 +73,10 @@ impl AbsPath {
 
     pub fn as_path_buf(&self) -> PathBuf {
         self.path.clone()
+    }
+
+    pub async fn exists(&self) -> bool {
+        fs::metadata(&self.path).await.is_ok()
     }
 }
 

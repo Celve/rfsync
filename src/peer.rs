@@ -2,12 +2,13 @@ use std::net::SocketAddr;
 
 use serde::{Deserialize, Serialize};
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct Peer {
     pub addr: SocketAddr,
     pub id: usize,
 }
 
+#[derive(Clone)]
 pub struct PeerList {
     pub peers: Vec<Peer>,
 }

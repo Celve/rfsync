@@ -5,7 +5,10 @@ use std::{
 
 use clap::Parser;
 use futures_util::future::join_all;
-use rfsync::server::Server;
+use rfsync::{
+    peer::{Peer, PeerList},
+    server::Server,
+};
 use tracing::info;
 
 #[derive(Parser)]
@@ -17,9 +20,18 @@ struct Cli {
     id: u16,
 }
 
+const PEER_NUM: usize = 10;
+
 #[tokio::main]
 async fn main() {
     let cli = Cli::parse();
+
+    // init the peer list
+    let mut peer_list = PeerList::new();
+    for i in 0..PEER_NUM {
+        let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 60000 + cli.id);
+        peer_list.push(Peer::new(addr, i));
+    }
 
     // register the subscriber
     let subscriber = tracing_subscriber::fmt().compact().finish();
@@ -28,6 +40,7 @@ async fn main() {
     // init the server
     let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 60000 + cli.id);
     let server = Server::new(addr, &cli.path, cli.id as usize).await;
+    *server.peers.write().await = peer_list;
 
     let handles = server.run();
     join_all(handles).await;

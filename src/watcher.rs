@@ -1,9 +1,13 @@
 use futures_util::StreamExt;
 use inotify::{EventMask, Inotify, WatchMask};
-use std::path::PathBuf;
+use std::fmt::Debug;
+use std::sync::Arc;
 use tokio::sync::mpsc::channel;
 use tokio::sync::mpsc::{Receiver, Sender};
-use tracing::info;
+use tokio::sync::Mutex;
+use tracing::{info, instrument};
+
+use crate::path::{RelativePath, RootPath};
 
 const MPSC_BUFFER_SIZE: usize = 16;
 const STREAM_BUFFER_SIZE: usize = 1024;
@@ -13,21 +17,23 @@ const STREAM_BUFFER_SIZE: usize = 1024;
 /// Watcher is fully depending on the crate `inotify`.
 pub struct Watcher {
     /// The path to be watched, which could not be modified after initiation.
-    #[allow(unused)]
-    path: PathBuf,
+    root: RootPath,
 
-    /// Receiver for inotify.
-    rx: Receiver<FileEvent>,
+    /// The path to be watched, which could not be modified after intit
+    relative: RelativePath,
+
+    /// Sender for inotify.
+    tx: Sender<FileEvent>,
 
     /// Senders for subscribers.
-    txs: Vec<Sender<FileEvent>>,
+    txs: Mutex<Vec<Sender<FileEvent>>>,
 }
 
 /// File event is used to describe changes happened in the file system.
 /// It's a wrapper of the event from inotify.
 #[derive(Clone, Debug)]
 pub struct FileEvent {
-    pub path: PathBuf,
+    pub path: RelativePath,
     pub ty: FileEventType,
 }
 
@@ -39,74 +45,102 @@ pub enum FileEventType {
 }
 
 impl Watcher {
-    pub fn new(path: PathBuf) -> Self {
+    pub fn new(root: RootPath, relative: RelativePath) -> Arc<Self> {
         let (tx, rx) = channel::<FileEvent>(MPSC_BUFFER_SIZE);
-        let path_replica = path.clone();
 
-        // the notification of inotify is handled by tokio
-        tokio::spawn(async move {
-            // init the inotify instance with the help of Linux
-            let inotify = Inotify::init().expect("Failed to initialize inotify.");
-            inotify
-                .watches()
-                .add(
-                    path_replica,
-                    WatchMask::CREATE | WatchMask::DELETE | WatchMask::MODIFY | WatchMask::MOVE,
-                )
-                .unwrap();
-
-            // establish the stream for inotify, using mpsc to relay the event
-            // cannot use `Vec` as buffer
-            let mut buffer = [0; STREAM_BUFFER_SIZE];
-            let mut stream = inotify.into_event_stream(&mut buffer).unwrap();
-            while let Some(e) = stream.next().await {
-                match e {
-                    Ok(event) => {
-                        info!("receive event {:?}", event);
-
-                        // we maintain the event and the path inside the file event
-                        tx.send(FileEvent::new(
-                            event.name.map_or(PathBuf::new(), |x| x.into()),
-                            event.mask.into(),
-                        ))
-                        .await
-                        .expect("Failed to send event to the channel.");
-                    }
-                    Err(_) => panic!("Failed to get the vent from inotify."),
-                }
-            }
+        let watcher = Arc::new(Self {
+            root,
+            relative,
+            tx: tx.clone(),
+            txs: Mutex::new(Vec::new()),
         });
 
-        Self {
-            path,
-            rx,
-            txs: Vec::new(),
+        // init the receiver
+        tokio::spawn(watcher.clone().run_recv(rx));
+
+        watcher
+    }
+
+    pub fn watch(self: Arc<Self>) {
+        tokio::spawn(self.clone().run_inotify());
+    }
+
+    #[instrument]
+    async fn run_inotify(self: Arc<Self>) {
+        // init the inotify instance with the help of Linux
+        let inotify = Inotify::init().expect("Failed to initialize inotify.");
+        let path = self.root.concat(&self.relative);
+        inotify
+            .watches()
+            .add(
+                path.clone(),
+                WatchMask::CREATE | WatchMask::DELETE | WatchMask::MODIFY | WatchMask::MOVE,
+            )
+            .unwrap();
+
+        info!("watcher init");
+
+        // establish the stream for inotify, using mpsc to relay the event
+        // use `Vec` as buffer with specified capacity
+        let mut buf = [0; STREAM_BUFFER_SIZE];
+        let mut stream = inotify.into_event_stream(&mut buf).unwrap();
+        while let Some(e) = stream.next().await {
+            match e {
+                Ok(event) => {
+                    info!("watcher {:?} receives event {:?}", path, event);
+
+                    if event.mask.contains(EventMask::IGNORED) {
+                        // the watcher should be reinited
+                        break;
+                    }
+
+                    let path = self
+                        .relative
+                        .concat(&event.name.map_or(RelativePath::default(), |x| x.into()));
+
+                    // we maintain the event and the path inside the file event
+                    self.tx
+                        .send(FileEvent::new(path, event.mask.into()))
+                        .await
+                        .expect("Failed to send event to the channel.");
+                }
+                Err(_) => panic!("Failed to get the event from inotify."),
+            }
         }
+
+        info!("watcher exit");
     }
 
     /// Give way to watching.
     /// Once it's initiated, the watcher is scheduled by the tokio to watch the directory.
-    pub fn watch(mut self) {
-        tokio::spawn(async move {
-            while let Some(event) = self.rx.recv().await {
-                for tx in self.txs.iter_mut() {
-                    tx.send(event.clone())
-                        .await
-                        .expect("Failed to send event to the channel.");
-                }
+    pub async fn run_recv(self: Arc<Self>, mut rx: Receiver<FileEvent>) {
+        while let Some(event) = rx.recv().await {
+            for tx in self.txs.lock().await.iter_mut() {
+                tx.send(event.clone())
+                    .await
+                    .expect("Failed to send event to the channel.");
             }
-        });
+        }
     }
 
-    pub fn subscribe(&mut self) -> Receiver<FileEvent> {
+    pub async fn subscribe(&self) -> Receiver<FileEvent> {
         let (tx, rx) = channel::<FileEvent>(MPSC_BUFFER_SIZE);
-        self.txs.push(tx);
+        self.txs.lock().await.push(tx);
         rx
     }
 }
 
+impl Debug for Watcher {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Watcher")
+            .field("root", &self.root)
+            .field("relative", &self.relative)
+            .finish()
+    }
+}
+
 impl FileEvent {
-    pub fn new(path: PathBuf, ty: FileEventType) -> Self {
+    pub fn new(path: RelativePath, ty: FileEventType) -> Self {
         Self { path, ty }
     }
 }

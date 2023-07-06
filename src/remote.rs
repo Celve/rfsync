@@ -1,4 +1,4 @@
-use std::{net::SocketAddr, path::PathBuf};
+use std::net::SocketAddr;
 
 use serde::{Deserialize, Serialize};
 use tokio::{
@@ -8,6 +8,7 @@ use tokio::{
 
 use crate::{
     op::{Request, Response},
+    path::RelativePath,
     sync::CellType,
     time::VecTime,
 };
@@ -17,7 +18,7 @@ use crate::{
 #[derive(Deserialize, Serialize, Clone)]
 pub struct RemoteCell {
     /// The path of the file, relative to the root sync dir.
-    pub(super) path: PathBuf,
+    pub(super) relative: RelativePath,
 
     /// The modification time vector.
     pub(super) modif: VecTime,
@@ -32,7 +33,7 @@ pub struct RemoteCell {
     pub(super) ty: CellType,
 
     /// Only use `PathBuf` because its children hasn't been fetched from remote.
-    pub(super) children: Vec<(PathBuf, CellType)>,
+    pub(super) children: Vec<(RelativePath, CellType)>,
 
     /// The remote server.
     pub(super) remote: SocketAddr,
@@ -45,7 +46,7 @@ impl RemoteCell {
         let mut stream = TcpStream::connect(self.remote).await.unwrap();
 
         // send request
-        let req = bincode::serialize(&Request::ReadFile(self.path.clone())).unwrap();
+        let req = bincode::serialize(&Request::ReadFile(self.relative.clone())).unwrap();
         stream.write(&req).await.unwrap();
 
         // receive response
@@ -66,16 +67,16 @@ impl RemoteCell {
 // constructors
 impl RemoteCell {
     pub fn new(
-        path: PathBuf,
+        path: RelativePath,
         modif: VecTime,
         sync: VecTime,
         crt: usize,
         ty: CellType,
-        children: Vec<(PathBuf, CellType)>,
+        children: Vec<(RelativePath, CellType)>,
         remote: SocketAddr,
     ) -> Self {
         Self {
-            path,
+            relative: path,
             modif,
             sync,
             crt,
@@ -86,7 +87,7 @@ impl RemoteCell {
     }
 
     /// Read `RemoteCell` from remote server.
-    pub async fn from_path(remote: SocketAddr, path: PathBuf) -> Self {
+    pub async fn from_path(remote: SocketAddr, path: RelativePath) -> Self {
         // establish connection
         let mut stream = TcpStream::connect(remote).await.unwrap();
 

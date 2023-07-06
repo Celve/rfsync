@@ -1,14 +1,12 @@
-use std::path::PathBuf;
-
 use serde::{Deserialize, Serialize};
 
-use crate::remote::RemoteCell;
+use crate::{path::RelativePath, remote::RemoteCell};
 
 #[derive(Deserialize, Serialize)]
 pub enum Request {
-    ReadCell(PathBuf),
-    ReadFile(PathBuf),
-    SyncDir(PathBuf),
+    ReadCell(RelativePath),
+    ReadFile(RelativePath),
+    SyncDir(RelativePath),
 }
 
 #[derive(Deserialize, Serialize)]

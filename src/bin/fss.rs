@@ -4,11 +4,7 @@ use std::{
 };
 
 use clap::Parser;
-use rfsync::{
-    path::RootPath,
-    peer::{Peer, PeerList},
-    server::Server,
-};
+use rfsync::{path::RootPath, peer::Peer, server::Server};
 use tracing::info;
 
 #[derive(Parser)]
@@ -27,7 +23,7 @@ async fn main() {
     let cli = Cli::parse();
 
     // init the peer list
-    let mut peer_list = PeerList::new();
+    let mut peer_list = Vec::new();
     for i in 0..PEER_NUM {
         let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 60000 + cli.id);
         peer_list.push(Peer::new(addr, i));

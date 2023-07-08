@@ -2,15 +2,12 @@ use std::net::SocketAddr;
 
 use serde::{Deserialize, Serialize};
 
-#[derive(Serialize, Deserialize, Clone)]
+use crate::server::Server;
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct Peer {
     pub addr: SocketAddr,
     pub id: usize,
-}
-
-#[derive(Clone)]
-pub struct PeerList {
-    pub peers: Vec<Peer>,
 }
 
 impl Peer {
@@ -19,12 +16,11 @@ impl Peer {
     }
 }
 
-impl PeerList {
-    pub fn new() -> Self {
-        Self { peers: Vec::new() }
-    }
-
-    pub fn push(&mut self, peer: Peer) {
-        self.peers.push(peer);
+impl From<&Server> for Peer {
+    fn from(value: &Server) -> Self {
+        Self {
+            addr: value.addr,
+            id: value.id,
+        }
     }
 }

@@ -14,7 +14,7 @@ use async_recursion::async_recursion;
 use tokio::{
     fs::{self, File},
     io::{AsyncReadExt, AsyncWriteExt},
-    net::TcpListener,
+    net::{TcpListener, TcpStream},
     sync::{Mutex, RwLock},
     task::JoinHandle,
 };
@@ -23,7 +23,7 @@ use tracing::{info, instrument};
 use crate::{
     op::{Request, Response},
     path::{AbsPath, RelPath, RootPath},
-    peer::{Peer, PeerList},
+    peer::Peer,
     remote::RemoteCell,
     sync::{CellType, SyncCell},
     time::VecTime,
@@ -36,7 +36,7 @@ pub struct Server {
     placeholder: Mutex<MaybeUninit<Arc<SyncCell>>>,
 
     /// Other servers.
-    pub peers: RwLock<PeerList>,
+    pub peers: RwLock<Vec<Peer>>,
 
     /// The `time - 1` represents the last time the server is updated.
     pub time: AtomicUsize,
@@ -50,7 +50,7 @@ impl Server {
             root: path.clone().into(),
             map: RwLock::new(HashMap::new()),
             placeholder: Mutex::new(MaybeUninit::uninit()),
-            peers: RwLock::new(PeerList::new()),
+            peers: RwLock::new(Vec::new()),
             time: AtomicUsize::new(0),
             id,
         });
@@ -91,12 +91,13 @@ impl Server {
                 let path = AbsPath::new(path).sub(&self.root).unwrap();
 
                 // recurse down and collect children
-                let child = Self::create(self.clone(), &path, ty).await;
+                let child = Self::create(self.clone(), path, ty).await;
                 cell.lock()
                     .await
                     .children
                     .insert(child.rel.clone(), child.clone());
             }
+            self.broadcast(RelPath::default()).await;
         }
     }
 
@@ -105,8 +106,8 @@ impl Server {
     /// If it's a directory, it would recurse down, adding all of its component to the server.
     #[instrument]
     #[async_recursion]
-    pub async fn create(self: Arc<Self>, path: &RelPath, ty: CellType) -> Arc<SyncCell> {
-        let cell = self.get_sc(path).await;
+    pub async fn create(self: Arc<Self>, rel: RelPath, ty: CellType) -> Arc<SyncCell> {
+        let cell = self.get_sc(&rel).await;
         let cell = if let Some(cell) = cell {
             // it should be deleted before
             {
@@ -122,7 +123,7 @@ impl Server {
             cell
         } else {
             // the file has never been created before
-            self.clone().make_sc_from_path(path, ty).await
+            self.clone().make_sc_from_path(&rel, ty).await
         };
 
         info!("create {:?}", cell);
@@ -141,10 +142,11 @@ impl Server {
                     } else {
                         CellType::File
                     };
-                    let path = RelPath::new(path);
+                    // let path = &AbsPath::new(path) - &self.root;
+                    let path = AbsPath::new(path).sub(&self.root).unwrap();
 
                     // recurse down and collect children
-                    let child = Self::create(self.clone(), &path, ty).await;
+                    let child = Self::create(self.clone(), path, ty).await;
                     cell_guard.children.insert(child.rel.clone(), child.clone());
                 }
             }
@@ -159,8 +161,9 @@ impl Server {
     /// Remove a file or directory because of the notice of the file system.
     #[instrument]
     #[async_recursion]
-    pub async fn remove(self: Arc<Self>, path: &RelPath) {
-        let cell = self.get_sc(path).await;
+    pub async fn remove(self: Arc<Self>, rel: RelPath) {
+        // TODO: I think I should create the cell whatever it's existing or not
+        let cell = self.get_sc(&rel).await;
         if let Some(cell) = cell {
             {
                 let mut cell_guard = cell.lock().await;
@@ -178,7 +181,7 @@ impl Server {
                     cell_guard.children.iter().for_each(|(path, _)| {
                         let path = path.clone();
                         let server = self.clone();
-                        tokio::spawn(async move { server.remove(&path).await });
+                        tokio::spawn(async move { server.remove(path).await });
                     });
 
                     // for now, we don't remove the children from the parent
@@ -192,11 +195,46 @@ impl Server {
         }
     }
 
+    #[instrument]
+    pub async fn broadcast(self: Arc<Self>, path: RelPath) {
+        info!("{:?} begins to broadcast", self);
+        for peer in self.peers.read().await.iter() {
+            if peer.id == self.id {
+                continue;
+            }
+
+            // establish connection
+            let mut stream = TcpStream::connect(peer.addr).await.unwrap();
+
+            // send request
+            let req =
+                bincode::serialize(&Request::SyncCell(self.as_ref().into(), path.clone())).unwrap();
+            stream.write(&req).await.unwrap();
+            stream.shutdown().await.unwrap();
+
+            info!("{:?} sends request to {:?}", self, peer);
+
+            // receive response
+            let mut buf = Vec::new();
+            stream.read_to_end(&mut buf).await.unwrap();
+            let res = bincode::deserialize::<Response>(&buf).unwrap();
+
+            info!("{:?} recvs response from {:?}", self, peer);
+
+            match res {
+                Response::Sync => {
+                    // do nothing
+                }
+                _ => panic!("unexpected response"),
+            }
+        }
+    }
+
     /// Deal with modification of file.
     #[instrument]
-    pub async fn modify(self: Arc<Self>, path: &RelPath) {
-        let cell = self.get_sc(path).await;
-        info!("modify {:?}", path);
+    pub async fn modify(self: Arc<Self>, rel: RelPath) {
+        let cell = self.get_sc(&rel).await;
+        info!("modify {:?}", rel);
         if let Some(cell) = cell {
             let mut cell_guard = cell.lock().await;
             cell_guard
@@ -230,9 +268,9 @@ impl Server {
             let server = self.clone();
 
             tokio::spawn(async move {
-                // let mut buf = [0; RECV_BUFFER_SIZE];
                 let mut buf = Vec::new();
                 let n = stream.read_to_end(&mut buf).await.unwrap();
+                info!("{:?} recvs request from others.", server);
 
                 if n != 0 {
                     let req = bincode::deserialize::<Request>(&buf).unwrap();
@@ -245,7 +283,6 @@ impl Server {
                         }
                         Request::ReadFile(path) => {
                             // TODO: I should not use unwrap here
-                            // let path = server.root.concat(&path);
                             let path = &server.root + &path;
                             let mut file = File::open(path.as_path_buf()).await.unwrap();
 
@@ -256,10 +293,15 @@ impl Server {
                             let res = bincode::serialize(&res).unwrap();
                             stream.write(&res).await.unwrap();
                         }
-                        Request::SyncDir(peer, path) => {
-                            server.sync(peer, &path).await;
+                        Request::SyncCell(peer, path) => {
+                            info!("{:?} begins to sync {:?}", server, path);
+                            server.clone().sync(peer, &path).await;
+                            let res = bincode::serialize(&Response::Sync).unwrap();
+                            stream.write(&res).await.unwrap();
                         }
                     }
+                    stream.shutdown().await.unwrap();
+                    info!("{:?} response", server);
                 } else {
                     println!("Find a empty connection");
                 }

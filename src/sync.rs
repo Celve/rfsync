@@ -13,7 +13,7 @@ use tokio::{
     io::AsyncWriteExt,
     sync::Mutex,
 };
-use tracing::instrument;
+use tracing::{info, instrument};
 
 use crate::{
     path::{AbsPath, RelPath},
@@ -74,21 +74,35 @@ pub struct SyncCellInner {
 // sync functions
 impl SyncCell {
     /// Synchronize the file with another server.
+    #[instrument]
     #[async_recursion]
     pub async fn sync_cell(self: Arc<Self>, other: RemoteCell) {
         self.sync_meta(&other).await;
-        match (self.lock().await.ty.clone(), other.ty) {
+
+        let self_ty = self.lock().await.ty;
+
+        match (self_ty, other.ty) {
             (CellType::Dir, CellType::Dir) => self.clone().sync_dirs(other).await,
             _ => self.clone().sync_files(other).await,
         }
     }
 
     /// Do the sync job when both the src and dst are dirs.
+    #[instrument]
     pub async fn sync_dirs(self: Arc<Self>, other: RemoteCell) {
+        info!("sync dir");
         if self.is_existing().await || other.is_existing() {
             if other.modif <= self.lock().await.sync {
                 // do nothing
             } else {
+                // TODO: wrap this inside a function
+                {
+                    let mut self_guard = self.lock().await;
+                    if self_guard.ty == CellType::None {
+                        self_guard.ty = CellType::Dir;
+                        fs::create_dir(self.path().as_path_buf()).await.unwrap();
+                    }
+                }
                 self.clone().recurse_children(other).await;
             }
         }
@@ -96,7 +110,9 @@ impl SyncCell {
     }
 
     /// Do the sync job when at least one of the src or the dst is not dir.
+    #[instrument]
     pub async fn sync_files(self: Arc<Self>, other: RemoteCell) {
+        info!("sync file");
         if !self.is_existing().await && other.is_existing() {
             let self_guard = self.lock().await;
             if other.modif <= self_guard.sync {
@@ -312,9 +328,9 @@ impl SyncCell {
 
         while let Some(event) = rx.recv().await {
             let rel = event.path;
+            let server = server.clone();
             match event.ty {
                 FileEventType::Create => {
-                    // let abs = server.root.concat(&rel);
                     let abs = &server.root + &rel;
                     let metadata = metadata(abs.as_path_buf()).await;
                     if let Ok(metadata) = metadata {
@@ -324,17 +340,25 @@ impl SyncCell {
                             CellType::File
                         };
 
-                        server.clone().create(&rel, ty).await;
+                        tokio::spawn(async move {
+                            server.clone().create(rel.clone(), ty).await;
+                            server.clone().broadcast(rel).await;
+                        });
                     } else {
-                        panic!("Failed to get metadata")
+                        // do nothing, because the file might be modified later
                     }
                 }
                 FileEventType::Delete => {
-                    server.clone().remove(&rel).await;
-                    server.get_sc(&rel).await.unwrap();
+                    tokio::spawn(async move {
+                        server.clone().remove(rel.clone()).await;
+                        server.clone().broadcast(rel).await;
+                    });
                 }
                 FileEventType::Modify => {
-                    server.clone().modify(&rel).await;
+                    tokio::spawn(async move {
+                        server.clone().remove(rel.clone()).await;
+                        server.clone().broadcast(rel).await;
+                    });
                 }
             }
         }
@@ -375,7 +399,7 @@ impl Debug for SyncCell {
         let self_guard = self.try_lock();
 
         let mut d = f.debug_struct("SyncCell");
-        d.field("path", &self.rel);
+        d.field("rel", &self.rel);
 
         if let Ok(self_guard) = self_guard {
             d.field("modif", &self_guard.modif)

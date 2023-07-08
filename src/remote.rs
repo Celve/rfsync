@@ -1,10 +1,11 @@
-use std::net::SocketAddr;
+use std::{fmt::Debug, net::SocketAddr};
 
 use serde::{Deserialize, Serialize};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::TcpStream,
 };
+use tracing::{info, instrument};
 
 use crate::{
     op::{Request, Response},
@@ -87,6 +88,7 @@ impl RemoteCell {
     }
 
     /// Read `RemoteCell` from remote server.
+    #[instrument]
     pub async fn from_path(remote: SocketAddr, path: RelPath) -> Self {
         // establish connection
         let mut stream = TcpStream::connect(remote).await.unwrap();
@@ -94,14 +96,28 @@ impl RemoteCell {
         // send request
         let req = bincode::serialize(&Request::ReadCell(path)).unwrap();
         stream.write(&req).await.unwrap();
+        stream.shutdown().await.unwrap();
 
         // receive response
         let mut buf = Vec::new();
         stream.read_to_end(&mut buf).await.unwrap();
         let res = bincode::deserialize::<Response>(&buf).unwrap();
         match res {
-            Response::Cell(cell) => cell,
+            Response::Cell(cell) => {
+                info!("make {:?}", cell);
+                cell
+            }
             _ => panic!("unexpected response"),
         }
+    }
+}
+
+impl Debug for RemoteCell {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RemoteCell")
+            .field("rel", &self.rel)
+            .field("modif", &self.modif)
+            .field("sync", &self.sync)
+            .finish()
     }
 }

@@ -6,7 +6,7 @@ use crate::{path::RelPath, peer::Peer, remote::RemoteCell};
 pub enum Request {
     ReadCell(RelPath),
     ReadFile(RelPath),
-    SyncDir(Peer, RelPath),
+    SyncCell(Peer, RelPath),
 }
 
 #[derive(Deserialize, Serialize)]

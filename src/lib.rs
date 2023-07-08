@@ -1,4 +1,4 @@
-pub mod op;
+pub mod comm;
 pub mod path;
 pub mod peer;
 pub mod remote;

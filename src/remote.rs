@@ -8,7 +8,7 @@ use tokio::{
 use tracing::{info, instrument};
 
 use crate::{
-    op::{Request, Response},
+    comm::{Comm, Request, Response},
     path::RelPath,
     sync::CellType,
     time::VecTime,
@@ -91,17 +91,7 @@ impl RemoteCell {
     #[instrument]
     pub async fn from_path(remote: SocketAddr, path: RelPath) -> Self {
         // establish connection
-        let mut stream = TcpStream::connect(remote).await.unwrap();
-
-        // send request
-        let req = bincode::serialize(&Request::ReadCell(path)).unwrap();
-        stream.write(&req).await.unwrap();
-        stream.shutdown().await.unwrap();
-
-        // receive response
-        let mut buf = Vec::new();
-        stream.read_to_end(&mut buf).await.unwrap();
-        let res = bincode::deserialize::<Response>(&buf).unwrap();
+        let res = Comm::new(remote).request(&Request::ReadCell(path)).await;
         match res {
             Response::Cell(cell) => {
                 info!("make {:?}", cell);

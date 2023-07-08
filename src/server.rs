@@ -14,14 +14,14 @@ use async_recursion::async_recursion;
 use tokio::{
     fs::{self, File},
     io::{AsyncReadExt, AsyncWriteExt},
-    net::{TcpListener, TcpStream},
+    net::TcpListener,
     sync::{Mutex, RwLock},
     task::JoinHandle,
 };
 use tracing::{info, instrument};
 
 use crate::{
-    op::{Request, Response},
+    comm::{Comm, Request, Response},
     path::{AbsPath, RelPath, RootPath},
     peer::Peer,
     remote::RemoteCell,
@@ -203,21 +203,10 @@ impl Server {
                 continue;
             }
 
-            // establish connection
-            let mut stream = TcpStream::connect(peer.addr).await.unwrap();
-
-            // send request
-            let req =
-                bincode::serialize(&Request::SyncCell(self.as_ref().into(), path.clone())).unwrap();
-            stream.write(&req).await.unwrap();
-            stream.shutdown().await.unwrap();
-
-            info!("{:?} sends request to {:?}", self, peer);
-
-            // receive response
-            let mut buf = Vec::new();
-            stream.read_to_end(&mut buf).await.unwrap();
-            let res = bincode::deserialize::<Response>(&buf).unwrap();
+            // go through network
+            let res = Comm::new(peer.addr)
+                .request(&Request::SyncCell(self.as_ref().into(), path.clone()))
+                .await;
 
             info!("{:?} recvs response from {:?}", self, peer);
 

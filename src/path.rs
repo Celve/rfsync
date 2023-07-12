@@ -1,5 +1,5 @@
 use std::{
-    ffi::OsString,
+    ffi::{OsStr, OsString},
     ops::{Add, Sub},
     path::PathBuf,
 };
@@ -28,6 +28,10 @@ impl RootPath {
     pub fn new(path: PathBuf) -> Self {
         Self { path }
     }
+
+    pub fn as_path_buf(&self) -> PathBuf {
+        self.path.clone()
+    }
 }
 
 impl From<PathBuf> for RootPath {
@@ -52,16 +56,27 @@ impl RelPath {
         path.pop();
         RelPath::new(path)
     }
-}
 
-impl From<PathBuf> for RelPath {
-    fn from(value: PathBuf) -> Self {
-        Self::new(value)
+    // Warning: this function might leads to the misuse of path.
+    pub fn as_delta_path_buf(&self) -> PathBuf {
+        self.path.clone()
     }
 }
 
-impl From<OsString> for RelPath {
-    fn from(value: OsString) -> Self {
+impl From<&PathBuf> for RelPath {
+    fn from(value: &PathBuf) -> Self {
+        Self::new(value.clone())
+    }
+}
+
+impl From<&OsString> for RelPath {
+    fn from(value: &OsString) -> Self {
+        Self::new(value.into())
+    }
+}
+
+impl From<&OsStr> for RelPath {
+    fn from(value: &OsStr) -> Self {
         Self::new(value.into())
     }
 }
@@ -148,5 +163,16 @@ impl Sub<&RelPath> for &AbsPath {
         } else {
             None
         }
+    }
+}
+
+impl Sub<&RelPath> for &RelPath {
+    type Output = Option<RelPath>;
+
+    fn sub(self, rhs: &RelPath) -> Self::Output {
+        let path = self.path.clone();
+        path.strip_prefix(&rhs.path)
+            .ok()
+            .map(|path| RelPath::new(path.to_path_buf()))
     }
 }

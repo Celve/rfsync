@@ -1,9 +1,9 @@
-use clap::Parser;
-use futures_util::StreamExt;
-use inotify::{EventMask, Inotify, WatchMask};
-use tracing::instrument;
+use std::{path::PathBuf, sync::Weak};
 
-const STREAM_BUFFER_SIZE: usize = 1024;
+use clap::Parser;
+use rfsync::{path::RootPath, watcher::Watcher};
+use tokio::task;
+use tracing::instrument;
 
 #[derive(Parser)]
 struct Cli {
@@ -14,31 +14,16 @@ struct Cli {
 #[instrument]
 #[tokio::main]
 async fn main() {
-    let cli = Cli::parse();
+    let subscriber = tracing_subscriber::fmt().compact().finish();
+    tracing::subscriber::set_global_default(subscriber).unwrap();
 
-    println!("begin");
-    let inotify = Inotify::init().expect("Failed to initialize inotify.");
-    inotify
-        .watches()
-        .add(
-            format_args!("./debug/{}", cli.id).to_string(),
-            WatchMask::ALL_EVENTS,
-        )
-        .unwrap();
+    let src = RootPath::new(PathBuf::from("./debug"));
+    let home = home::home_dir().unwrap();
+    let tmp = RootPath::new(home.join(".rfsync"));
 
-    let mut buf = [0; STREAM_BUFFER_SIZE];
-    let mut stream = inotify.into_event_stream(&mut buf).unwrap();
-    while let Some(e) = stream.next().await {
-        match e {
-            Ok(event) => {
-                println!("receive {:?}", event);
-
-                if event.mask.contains(EventMask::IGNORED) {
-                    // the watcher should be reinited
-                    break;
-                }
-            }
-            Err(_) => panic!("Failed to get the event from inotify."),
-        }
-    }
+    let mut watcher = Watcher::new(src, tmp, Weak::new());
+    watcher.init();
+    task::spawn_blocking(move || {
+        watcher.watch();
+    });
 }

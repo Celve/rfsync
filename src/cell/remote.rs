@@ -8,9 +8,9 @@ use tokio::{
 use tracing::{info, instrument};
 
 use crate::{
+    cell::CellType,
     comm::{Comm, Request, Response},
     path::RelPath,
-    sync::CellType,
     time::VecTime,
 };
 
@@ -37,14 +37,14 @@ pub struct RemoteCell {
     pub(super) children: Vec<(RelPath, CellType)>,
 
     /// The remote server.
-    pub(super) remote: SocketAddr,
+    pub(super) addr: SocketAddr,
 }
 
 // utilities
 impl RemoteCell {
     /// Read the file content from the remote server with TCP connections.
     pub async fn read_file(&self) -> Vec<u8> {
-        let mut stream = TcpStream::connect(self.remote).await.unwrap();
+        let mut stream = TcpStream::connect(self.addr).await.unwrap();
 
         // send request
         let req = bincode::serialize(&Request::ReadFile(self.rel.clone())).unwrap();
@@ -83,7 +83,7 @@ impl RemoteCell {
             crt,
             ty,
             children,
-            remote,
+            addr: remote,
         }
     }
 
@@ -108,6 +108,7 @@ impl Debug for RemoteCell {
             .field("rel", &self.rel)
             .field("modif", &self.modif)
             .field("sync", &self.sync)
+            .field("ty", &self.ty)
             .finish()
     }
 }

@@ -52,51 +52,69 @@ impl VecTime {
     pub fn insert(&mut self, mid: usize, time: usize) {
         self.map.insert(mid, time);
     }
+
+    pub fn get(&mut self, mid: usize) -> Option<usize> {
+        self.map.get(&mid).map(|v| *v)
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.map.is_empty()
+    }
 }
 
 impl PartialOrd for VecTime {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        // not comparable because of different length
         if self.map.len() != other.map.len() {
+            // not comparable because of different length
             return None;
-        }
-
-        // less when element-wise less, greater when element-wise greater
-        let mut ordering = Ordering::Equal;
-        for (k, v) in self.map.iter() {
-            let other_v = other.map.get(k);
-            if let Some(other_v) = other_v {
-                if ordering == Ordering::Equal {
-                    ordering = v.cmp(other_v);
-                } else if ordering != v.cmp(other_v) {
+        } else {
+            // less when element-wise less, greater when element-wise greater
+            let mut ordering = Ordering::Equal;
+            for (k, v) in self.map.iter() {
+                let other_v = other.map.get(k);
+                if let Some(other_v) = other_v {
+                    if ordering == Ordering::Equal {
+                        ordering = v.cmp(other_v);
+                    } else if ordering != v.cmp(other_v) {
+                        return None;
+                    }
+                } else {
                     return None;
                 }
-            } else {
-                return None;
             }
+            Some(ordering)
         }
-        Some(ordering)
     }
 }
 
 impl PartialEq<VecTime> for usize {
     fn eq(&self, other: &VecTime) -> bool {
-        // expand the `usize` to compare
-        other.map.values().all(|v| v == other)
+        if other.is_empty() {
+            // pay attention to the empty situation
+            false
+        } else {
+            // expand the `usize` to compare
+            other.map.values().all(|v| v == other)
+        }
     }
 }
 
 impl PartialOrd<VecTime> for usize {
     fn partial_cmp(&self, other: &VecTime) -> Option<Ordering> {
-        // expand the `usize` to compare
-        let mut ordering = Ordering::Equal;
-        for v in other.map.values() {
-            if ordering == Ordering::Equal {
-                ordering = self.cmp(v)
-            } else if ordering != self.cmp(v) {
-                return None;
+        if other.is_empty() {
+            // pay attention to the empty situation
+            None
+        } else {
+            // expand the `usize` to compare
+            let mut ordering = Ordering::Equal;
+            for v in other.map.values() {
+                if ordering == Ordering::Equal {
+                    ordering = self.cmp(v)
+                } else if ordering != self.cmp(v) {
+                    return None;
+                }
             }
+            Some(ordering)
         }
-        Some(ordering)
     }
 }

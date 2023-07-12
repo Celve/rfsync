@@ -1,9 +1,8 @@
+pub mod cell;
 pub mod comm;
 pub mod path;
 pub mod peer;
-pub mod remote;
 pub mod server;
-pub mod sync;
 pub mod time;
 pub mod watcher;
 
@@ -18,7 +17,7 @@ mod tests {
 
     use futures_util::future::join_all;
     use tokio::{
-        fs::{self, remove_dir_all},
+        fs,
         task::JoinHandle,
         time::{sleep_until, Instant},
     };
@@ -27,6 +26,10 @@ mod tests {
     use crate::{path::RootPath, peer::Peer, server::Server};
 
     const DEBUG_PATH: &str = "./debug";
+
+    fn tmp_path() -> PathBuf {
+        home::home_dir().unwrap().join(".rfsync")
+    }
 
     fn server_path(id: usize) -> PathBuf {
         let path = PathBuf::from(DEBUG_PATH);
@@ -38,16 +41,16 @@ mod tests {
         let mut peer_list = Vec::new();
         let mut handles = Vec::new();
         for id in 0..num {
+            fs::create_dir(server_path(id)).await.unwrap();
             let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 60000 + id as u16);
             let server = Server::new(addr, &RootPath::new(server_path(id)), id as usize).await;
-            handles.push(server.run());
+            handles.extend(server.run());
             cluster.push(server);
             peer_list.push(Peer::new(addr, id as usize));
         }
 
         for server in cluster.iter() {
             *server.peers.write().await = peer_list.clone();
-            server.clone().init().await;
         }
 
         (cluster, handles)
@@ -56,12 +59,19 @@ mod tests {
     #[tokio::test]
     async fn two_server_sync() {
         // init the subscriber
-        let subscriber = tracing_subscriber::fmt().compact().finish();
+        let subscriber = tracing_subscriber::fmt()
+            .compact()
+            .with_file(true)
+            .with_line_number(true)
+            .finish();
         tracing::subscriber::set_global_default(subscriber).unwrap();
 
         // remove the old
-        if PathBuf::from(DEBUG_PATH).exists() {
-            remove_dir_all(DEBUG_PATH).await.unwrap();
+        if fs::metadata(DEBUG_PATH).await.is_ok() {
+            fs::remove_dir_all(DEBUG_PATH).await.unwrap();
+        }
+        if fs::metadata(tmp_path()).await.is_ok() {
+            fs::remove_dir_all(tmp_path()).await.unwrap();
         }
 
         fs::create_dir(DEBUG_PATH).await.unwrap();

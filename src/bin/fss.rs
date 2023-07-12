@@ -4,6 +4,7 @@ use std::{
 };
 
 use clap::Parser;
+use futures_util::future::join_all;
 use rfsync::{path::RootPath, peer::Peer, server::Server};
 use tracing::info;
 
@@ -38,8 +39,9 @@ async fn main() {
     let path = RootPath::new(cli.path);
     let server = Server::new(addr, &path, cli.id as usize).await;
     *server.peers.write().await = peer_list;
-    server.clone().init().await;
+    // server.clone().init().await;
 
-    server.run().await.unwrap();
+    // server.run().await.unwrap();
+    join_all(server.run()).await;
     info!("server {} is closed", cli.id);
 }

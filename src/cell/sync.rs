@@ -32,7 +32,7 @@ impl TraCell {
         info!("sync done");
 
         // begin to remove cache
-        let path = Server::tmp_path().as_path_buf().join(sid.to_string());
+        let path = self.server.tmp_path().as_path_buf().join(sid.to_string());
         let meta = fs::metadata(&path).await;
         if let Ok(meta) = meta {
             if meta.is_dir() {
@@ -73,11 +73,15 @@ impl TraCell {
                         let mut handles = Vec::new();
                         for cc in cc.children.iter() {
                             // create a tc if there is none
-                            let tc = self_guard.children.get(&cc.offset).map_or(
-                                TraCell::empty(&self.server, &cc.rel, Some(Arc::downgrade(&self)))
-                                    .await,
-                                |tc| tc.clone(),
-                            );
+                            let tc = if self_guard.children.contains_key(&cc.offset) {
+                                self_guard.children.get(&cc.offset).unwrap().clone()
+                            } else {
+                                let tc =
+                                    Self::empty(&self.server, &cc.rel, Some(Arc::downgrade(&self)))
+                                        .await;
+                                self_guard.children.insert(cc.offset.clone(), tc.clone());
+                                tc
+                            };
                             handles.push(tokio::spawn(tc.sync_copy(sid, cc.clone(), addr)));
                         }
                         join_all(handles).await;

@@ -84,7 +84,6 @@ impl Watcher {
                 Ok(events) => {
                     let events: Vec<Event<&OsStr>> = events.collect();
                     self.delegate(&events);
-                    info!("end!");
                 }
                 Err(err) => {
                     error!("{:?}", err);

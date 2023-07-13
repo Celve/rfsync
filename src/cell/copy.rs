@@ -19,6 +19,8 @@ pub struct CopyCell {
     /// The path of the file, relative to the root sync dir.
     pub(super) rel: RelPath,
 
+    pub(super) tc: Arc<TraCell>,
+
     /// The modification time vector.
     pub(super) modif: VecTime,
 
@@ -55,18 +57,25 @@ impl CopyCell {
 
         match sync_op {
             SyncOp::Copy => Self::copy_from_rc(sid, offset.clone(), tc.clone(), &rc, ts).await,
-            SyncOp::Conflict => Self::conflict(sid, offset.clone(), &rc, ts).await,
+            SyncOp::Conflict => Self::conflict(sid, offset.clone(), tc.clone(), &rc, ts).await,
             SyncOp::Recurse => Self::recurse(sid, offset.clone(), tc.clone(), &rc, ts).await,
-            SyncOp::None => Self::none(sid, offset.clone(), &rc, ts).await,
+            SyncOp::None => Self::none(sid, offset.clone(), tc.clone(), &rc, ts).await,
         }
     }
 
     /// Create a `TmpCell` that represents that there is nothing to do for sync.
-    pub async fn none(sid: usize, offset: RelPath, rc: &RemoteCell, ts: usize) -> Self {
+    pub async fn none(
+        sid: usize,
+        offset: RelPath,
+        tc: Arc<TraCell>,
+        rc: &RemoteCell,
+        ts: usize,
+    ) -> Self {
         Self::new(
             sid,
             offset,
             rc.rel.clone(),
+            tc,
             VecTime::new(),
             VecTime::new(),
             0,
@@ -81,8 +90,14 @@ impl CopyCell {
     /// Report a conflict in synchronization.
     ///
     /// Because it's a conflict, we should create a replica in the `/tmp` directory.
-    pub async fn conflict(sid: usize, offset: RelPath, rc: &RemoteCell, ts: usize) -> Self {
-        let path = Self::path_from_raw(sid, &rc.rel, &offset);
+    pub async fn conflict(
+        sid: usize,
+        offset: RelPath,
+        tc: Arc<TraCell>,
+        rc: &RemoteCell,
+        ts: usize,
+    ) -> Self {
+        let path = Self::path_from_raw(sid, &tc.server, &rc.rel, &offset);
 
         let content = rc.read_file().await;
         fs::write(path, content).await.unwrap();
@@ -91,6 +106,7 @@ impl CopyCell {
             sid,
             offset,
             rc.rel.clone(),
+            tc.clone(),
             rc.modif.clone(),
             rc.sync.clone(),
             0,
@@ -108,19 +124,20 @@ impl CopyCell {
         sid: usize,
         offset: RelPath,
         tc: Arc<TraCell>,
-        other: &RemoteCell,
+        rc: &RemoteCell,
         ts: usize,
     ) -> Self {
-        let path = Self::path_from_raw(sid, &other.rel, &offset);
+        info!("in");
+        let path = Self::path_from_raw(sid, &tc.server, &rc.rel, &offset);
 
-        let children = if other.ty == CellType::Dir {
+        let children = if rc.ty == CellType::Dir {
             // begin to watch
             if let Err(e) = fs::create_dir_all(&path).await {
                 error!("{:?}", e);
             }
 
             let mut handles = Vec::new();
-            for (path, _) in other.children.iter() {
+            for (path, _) in rc.children.iter() {
                 let tc = {
                     let mut tc_guard = tc.lock().await;
                     if tc_guard.has_child(path) {
@@ -132,7 +149,7 @@ impl CopyCell {
                     }
                 };
                 let path = path.clone();
-                let addr = other.addr;
+                let addr = rc.addr;
                 let offset = offset.clone();
                 handles.push(tokio::spawn(async move {
                     let rc = RemoteCell::from_path(addr, path.clone()).await;
@@ -147,7 +164,7 @@ impl CopyCell {
                 .collect();
             children
         } else {
-            let content = other.read_file().await;
+            let content = rc.read_file().await;
             fs::write(&path, content).await.unwrap();
             Vec::new()
         };
@@ -155,11 +172,12 @@ impl CopyCell {
         let cc = Self::new(
             sid,
             offset,
-            other.rel.clone(),
-            other.modif.clone(),
-            other.sync.clone(),
-            other.crt,
-            other.ty,
+            rc.rel.clone(),
+            tc.clone(),
+            rc.modif.clone(),
+            rc.sync.clone(),
+            rc.crt,
+            rc.ty,
             SyncOp::Copy,
             ts,
             children,
@@ -177,7 +195,7 @@ impl CopyCell {
         rc: &RemoteCell,
         ts: usize,
     ) -> Self {
-        let path = Self::path_from_raw(sid, &rc.rel, &offset);
+        let path = Self::path_from_raw(sid, &tc.server, &rc.rel, &offset);
         if let Err(e) = fs::create_dir_all(&path).await {
             error!("{:?}", e);
         }
@@ -188,6 +206,7 @@ impl CopyCell {
             sid,
             offset.clone(),
             rc.rel.clone(),
+            tc.clone(),
             rc.modif.clone(),
             rc.sync.clone(),
             rc.crt,
@@ -244,6 +263,7 @@ impl CopyCell {
         sid: usize,
         offset: RelPath,
         rel: RelPath,
+        tc: Arc<TraCell>,
         modif: VecTime,
         sync: VecTime,
         crt: usize,
@@ -256,6 +276,7 @@ impl CopyCell {
             sid,
             offset,
             rel,
+            tc,
             modif,
             sync,
             crt,
@@ -267,11 +288,16 @@ impl CopyCell {
     }
 
     pub fn path(&self) -> PathBuf {
-        Self::path_from_raw(self.sid, &self.rel, &self.offset)
+        Self::path_from_raw(self.sid, &self.tc.server, &self.rel, &self.offset)
     }
 
-    pub fn path_from_raw(sid: usize, rel: &RelPath, offset: &RelPath) -> PathBuf {
-        let mut path = PathBuf::from(Server::tmp_path());
+    pub fn path_from_raw(
+        sid: usize,
+        server: &Arc<Server>,
+        rel: &RelPath,
+        offset: &RelPath,
+    ) -> PathBuf {
+        let mut path = PathBuf::from(server.tmp_path());
         path.push(sid.to_string());
         path.push(rel.sub(&offset).unwrap().as_delta_path_buf());
         path

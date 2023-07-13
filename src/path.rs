@@ -1,6 +1,6 @@
 use std::{
     ffi::{OsStr, OsString},
-    ops::{Add, Sub},
+    ops::{Add, AddAssign, Sub},
     path::PathBuf,
 };
 
@@ -114,6 +114,12 @@ impl Add<&RelPath> for &RelPath {
         let mut path = self.path.clone();
         path.push(&rhs.path);
         RelPath::new(path)
+    }
+}
+
+impl AddAssign<&RelPath> for RelPath {
+    fn add_assign(&mut self, rhs: &RelPath) {
+        self.path.push(&rhs.path);
     }
 }
 

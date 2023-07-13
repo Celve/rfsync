@@ -105,6 +105,7 @@ impl TraCell {
     #[instrument]
     #[async_recursion]
     pub async fn broadcast(self: Arc<Self>) {
+        info!("broadcast");
         let server = self.server.clone();
         for peer in server.peers.read().await.iter() {
             if peer.id == server.id {

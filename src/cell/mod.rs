@@ -12,6 +12,7 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
+use tracing::info;
 
 use crate::{
     path::{AbsPath, RelPath},
@@ -94,13 +95,29 @@ impl TraCell {
             let self_guard = self.lock().await;
             (self_guard.modif.clone(), self_guard.sync.clone())
         };
-        let mut last = self.clone();
-        while let Some(curr) = last.parent.as_ref().map(|c| c.upgrade().unwrap()) {
+        let mut rel = RelPath::default();
+        let mut curr = self.server.clone().make_tc(&RelPath::default()).await;
+        info!("{:?}", curr);
+        let delta_path = self.rel.as_delta_path_buf();
+        let comps: Vec<_> = delta_path.components().collect();
+        for comp in comps {
             let mut curr_guard = curr.lock().await;
             curr_guard.modif.merge_max(&modif);
             curr_guard.sync.merge_min(&sync);
-            last = curr.clone()
+            let comp = RelPath::from(comp.as_os_str());
+            rel += &comp;
+            info!("{:?} {:?}", rel, curr_guard.children);
+            let next = curr_guard.children.get(&rel).unwrap().clone();
+            drop(curr_guard);
+            curr = next;
         }
+        // let mut last = self.clone();
+        // while let Some(curr) = last.parent.as_ref().map(|c| c.upgrade().unwrap()) {
+        //     let mut curr_guard = curr.lock().await;
+        //     curr_guard.modif.merge_max(&modif);
+        //     curr_guard.sync.merge_min(&sync);
+        //     last = curr.clone()
+        // }
     }
 }
 

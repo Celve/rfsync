@@ -74,7 +74,7 @@ impl Server {
 
         let server = Arc::downgrade(self);
         let src = self.root.clone();
-        let tmp = Self::tmp_path();
+        let tmp = self.tmp_path();
         let mut watcher = Watcher::new(src, tmp, server);
         watcher.init();
         let watch_handle = tokio::task::spawn_blocking(move || watcher.watch());
@@ -90,6 +90,7 @@ impl Server {
         tc.clone()
             .create(self.time.fetch_add(1, Ordering::AcqRel))
             .await;
+        tc.broadcast().await;
     }
 
     pub async fn create(self: Arc<Self>, rel: RelPath) {
@@ -141,7 +142,7 @@ impl Server {
                     info!("{:?} recvs {:?}", server, req);
                     match req {
                         Request::ReadCell(path) => {
-                            let cell = server.get_tc(&path).await.unwrap();
+                            let cell = server.get_tc(&path).await.expect("there should be one tc");
                             let res = Response::Cell(cell.into_rc(server.addr).await);
                             let res = bincode::serialize(&res).unwrap();
                             stream.write(&res).await.unwrap();
@@ -193,8 +194,16 @@ impl Server {
         if let Some(tc) = tc {
             tc
         } else {
+            // make sure again, because the lock is released
             let parent = self.clone().make_tc(&path.parent()).await;
-            TraCell::empty(&self, path, Some(Arc::downgrade(&parent))).await
+            let mut parent_guard = parent.lock().await;
+            if parent_guard.children.contains_key(&path) {
+                parent_guard.children.get(&path).unwrap().clone()
+            } else {
+                let tc = TraCell::empty(&self, path, Some(Arc::downgrade(&parent))).await;
+                parent_guard.children.insert(path.clone(), tc.clone());
+                tc
+            }
         }
     }
 
@@ -208,9 +217,10 @@ impl Server {
 }
 
 impl Server {
-    pub fn tmp_path() -> RootPath {
+    pub fn tmp_path(&self) -> RootPath {
         let mut path = home::home_dir().unwrap();
         path.push(".rfsync");
+        path.push(self.id.to_string());
         RootPath::new(path)
     }
 }

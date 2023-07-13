@@ -44,16 +44,9 @@ pub struct RemoteCell {
 impl RemoteCell {
     /// Read the file content from the remote server with TCP connections.
     pub async fn read_file(&self) -> Vec<u8> {
-        let mut stream = TcpStream::connect(self.addr).await.unwrap();
-
-        // send request
-        let req = bincode::serialize(&Request::ReadFile(self.rel.clone())).unwrap();
-        stream.write(&req).await.unwrap();
-
-        // receive response
-        let mut buf = Vec::new();
-        stream.read_to_end(&mut buf).await.unwrap();
-        let res = bincode::deserialize::<Response>(&buf).unwrap();
+        let res = Comm::new(self.addr)
+            .request(&Request::ReadFile(self.rel.clone()))
+            .await;
         match res {
             Response::File(data) => data,
             _ => panic!("unexpected response"),

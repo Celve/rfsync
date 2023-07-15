@@ -43,8 +43,7 @@ impl TraCell {
                         let child = if let Some(child) = self_guard.get_child(&path) {
                             child
                         } else {
-                            let cell =
-                                Self::empty(&self.server, &path, Some(Arc::downgrade(&self))).await;
+                            let cell = Self::empty(&self.server, &path).await;
                             self_guard.add_child(cell.clone());
 
                             cell
@@ -125,83 +124,6 @@ impl TraCell {
         }
     }
 }
-
-// impl TraCell {
-//     /// Monitor the file system.
-//     pub fn watch(self: Arc<Self>) {
-//         tokio::spawn(self.run_watch());
-//     }
-
-//     #[instrument]
-//     pub async fn run_watch(self: Arc<Self>) {
-//         let server = self.server.clone();
-
-//         // begin to watch
-//         let watcher = Ow::new(
-//             server.root.clone(),
-//             self.rel.clone(),
-//             WatchMask::CREATE | WatchMask::DELETE | WatchMask::MODIFY | WatchMask::MOVE,
-//         );
-//         let mut watch = watcher.subscribe().await;
-//         watcher.clone().watch();
-
-//         // init cookies receiver
-//         let mut rx = self.rx.resubscribe();
-//         let mut cookies = HashSet::new();
-
-//         while let Some(event) = watch.recv().await {
-//             let cell = self.clone();
-//             let time = server.time.fetch_add(1, Ordering::AcqRel);
-//             match event.ty {
-//                 FileEventType::Create => {
-//                     info!("create {:?}", event.path);
-//                     tokio::spawn(async move {
-//                         cell.clone().create(time).await;
-//                         cell.clone().sendup_meta().await;
-//                         cell.clone().broadcast().await;
-//                     });
-//                 }
-//                 FileEventType::Delete | FileEventType::MovedFrom => {
-//                     info!("delete {:?}", event.path);
-//                     tokio::spawn(async move {
-//                         cell.clone().remove(time).await;
-//                         cell.clone().sendup_meta().await;
-//                         cell.clone().broadcast().await;
-//                     });
-//                 }
-//                 FileEventType::Modify => {
-//                     info!("modify {:?}", event.path);
-//                     tokio::spawn(async move {
-//                         cell.clone().modify(time).await;
-//                         cell.clone().sendup_meta().await;
-//                         cell.clone().broadcast().await;
-//                     });
-//                 }
-//                 FileEventType::MovedTo => {
-//                     // TODO: I don't know whether or not should I wait
-//                     while let Ok(cookie) = rx.try_recv() {
-//                         cookies.insert(cookie);
-//                     }
-//                     // it's a synchronization made by us
-//                     if cookies.contains(&event.cookie) {
-//                         info!("ignore {:?}", event.path);
-//                         cookies.remove(&event.cookie);
-//                     } else {
-//                         info!("create {:?}", event.path);
-//                         tokio::spawn(async move {
-//                             cell.clone().modify(time).await;
-//                             cell.clone().sendup_meta().await;
-//                             cell.clone().broadcast().await;
-//                         });
-//                     }
-//                 }
-//                 FileEventType::Ignored => {
-//                     break;
-//                 }
-//             }
-//         }
-//     }
-// }
 
 impl TraCellInner {
     pub fn modify(&mut self, server: &Arc<Server>, time: usize) -> bool {

@@ -3,12 +3,7 @@ pub mod modif;
 pub mod remote;
 pub mod sync;
 
-use std::{
-    collections::HashMap,
-    fmt::Debug,
-    net::SocketAddr,
-    sync::{Arc, Weak},
-};
+use std::{collections::HashMap, fmt::Debug, net::SocketAddr, sync::Arc};
 
 use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
@@ -41,8 +36,6 @@ pub enum CellType {
 pub struct TraCell {
     /// The path of the file, relative to the root sync dir.
     pub(super) rel: RelPath,
-
-    pub(super) parent: Option<Weak<TraCell>>,
 
     pub(super) server: Arc<Server>,
 
@@ -147,7 +140,6 @@ impl TraCell {
     pub fn new(
         server: &Arc<Server>,
         path: &RelPath,
-        parent: Option<Weak<TraCell>>,
         ty: CellType,
         modif: VecTime,
         sync: VecTime,
@@ -157,7 +149,6 @@ impl TraCell {
     ) -> Arc<Self> {
         Arc::new(Self {
             rel: path.clone(),
-            parent,
             server: server.clone(),
             inner: Mutex::new(TraCellInner {
                 modif,
@@ -171,15 +162,10 @@ impl TraCell {
     }
 
     /// The `empty` function doesn't maintain the file tree due to the latent risk for dead lock.
-    pub async fn empty(
-        server: &Arc<Server>,
-        path: &RelPath,
-        parent: Option<Weak<TraCell>>,
-    ) -> Arc<Self> {
+    pub async fn empty(server: &Arc<Server>, path: &RelPath) -> Arc<Self> {
         let cell = Self::new(
             server,
             path,
-            parent,
             CellType::None,
             VecTime::new(),
             VecTime::new(),

@@ -127,7 +127,6 @@ impl CopyCell {
         rc: &RemoteCell,
         ts: usize,
     ) -> Self {
-        info!("in");
         let path = Self::path_from_raw(sid, &tc.server, &rc.rel, &offset);
 
         let children = if rc.ty == CellType::Dir {
@@ -143,7 +142,7 @@ impl CopyCell {
                     if tc_guard.has_child(path) {
                         tc_guard.get_child(path).unwrap()
                     } else {
-                        let tc = TraCell::empty(&tc.server, path, Some(Arc::downgrade(&tc))).await;
+                        let tc = TraCell::empty(&tc.server, path).await;
                         tc_guard.add_child(tc.clone());
                         tc
                     }
@@ -157,6 +156,8 @@ impl CopyCell {
                 }));
             }
 
+            info!("recursively copy {:?}", path);
+
             let children: Vec<CopyCell> = join_all(handles)
                 .await
                 .iter()
@@ -165,10 +166,12 @@ impl CopyCell {
             children
         } else {
             let content = rc.read_file().await;
-            fs::write(&path, content).await.unwrap();
+            if let Err(e) = fs::write(&path, content).await {
+                error!("{:?} with {:?}", e, path);
+            }
+            info!("copy to file {:?}", path);
             Vec::new()
         };
-        info!("create {:?}", path);
         let cc = Self::new(
             sid,
             offset,
@@ -233,7 +236,7 @@ impl CopyCell {
         }
         for (path, _) in rc.children.iter() {
             if !tc_guard.children.contains_key(path) {
-                let tc = TraCell::empty(&tc.server, path, Some(Arc::downgrade(&tc))).await;
+                let tc = TraCell::empty(&tc.server, path).await;
                 tc_guard.add_child(tc.clone());
                 let path = path.clone();
                 let addr = rc.addr.clone();

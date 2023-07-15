@@ -5,8 +5,6 @@ use futures_util::future::join_all;
 use tokio::fs;
 use tracing::{error, info, instrument};
 
-use crate::{path::RelPath, server::Server};
-
 use super::{copy::CopyCell, remote::RemoteCell, CellType, TraCell, TraCellInner};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -19,14 +17,17 @@ pub enum SyncOp {
 
 impl TraCell {
     #[instrument]
-    pub async fn sync(self: Arc<Self>, addr: SocketAddr, rel: RelPath) {
+    pub async fn sync(self: Arc<Self>, addr: SocketAddr) {
         info!("begin to sync");
         let sid = self
             .server
             .sid
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let rc = RemoteCell::from_path(addr, rel).await;
-        let cc = CopyCell::make(sid, self.clone(), rc, self.rel.clone()).await;
+        let mut path = self.server.tmp_path().as_path_buf();
+        path.push(sid.to_string());
+        fs::create_dir_all(path).await.unwrap();
+        let rc = RemoteCell::from_path(addr, self.rel.clone()).await;
+        let cc = CopyCell::make(sid, self.clone(), rc, self.rel.parent()).await;
         info!("copy done");
         self.clone().sync_copy(sid, cc, addr).await;
         info!("sync done");
@@ -53,7 +54,7 @@ impl TraCell {
                     SyncOp::Copy => {
                         info!("rename {:?} -> {:?}", cc.path(), self.path());
                         if let Err(e) = fs::rename(cc.path(), self.path().as_path_buf()).await {
-                            error!("{:?}", e);
+                            error!("{:?} with {:?} and {:?}", e, cc.path(), self.path());
                         }
                         self_guard.reshape_from_cc(&cc);
                     }
@@ -76,9 +77,7 @@ impl TraCell {
                             let tc = if self_guard.children.contains_key(&cc.offset) {
                                 self_guard.children.get(&cc.offset).unwrap().clone()
                             } else {
-                                let tc =
-                                    Self::empty(&self.server, &cc.rel, Some(Arc::downgrade(&self)))
-                                        .await;
+                                let tc = Self::empty(&self.server, &cc.rel).await;
                                 self_guard.children.insert(cc.offset.clone(), tc.clone());
                                 tc
                             };

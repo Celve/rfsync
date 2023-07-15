@@ -59,7 +59,7 @@ impl Server {
         });
 
         // put tc into place holder without initing
-        let tc = TraCell::empty(&server, &RelPath::default(), None).await;
+        let tc = TraCell::empty(&server, &RelPath::default()).await;
         server.placeholder.lock().await.write(tc.clone());
         server.add_tc(&tc).await;
 
@@ -161,7 +161,7 @@ impl Server {
                         }
                         Request::SyncCell(peer, path) => {
                             let tc = server.make_tc(&path).await;
-                            tc.sync(peer.addr, path).await;
+                            tc.sync(peer.addr).await;
                             let res = bincode::serialize(&Response::Sync).unwrap();
                             stream.write(&res).await.unwrap();
                         }
@@ -200,7 +200,7 @@ impl Server {
             if parent_guard.children.contains_key(&path) {
                 parent_guard.children.get(&path).unwrap().clone()
             } else {
-                let tc = TraCell::empty(&self, path, Some(Arc::downgrade(&parent))).await;
+                let tc = TraCell::empty(&self, path).await;
                 parent_guard.children.insert(path.clone(), tc.clone());
                 tc
             }

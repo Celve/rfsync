@@ -123,3 +123,41 @@ async fn sync_diff_modif_simple() {
 
     join_all(handles).await;
 }
+
+#[tokio::test]
+async fn sync_diff_modif_hard() {
+    // init the subscriber
+    let subscriber = tracing_subscriber::fmt()
+        .compact()
+        .with_file(true)
+        .with_line_number(true)
+        .finish();
+    tracing::subscriber::set_global_default(subscriber).unwrap();
+
+    init_tmp_dirs().await;
+    init_src_dirs(2).await;
+
+    // make sure test env is cleared
+    sleep_until(Instant::now() + Duration::from_millis(500)).await;
+
+    // init two server
+    let (_, handles) = generate_server(2).await;
+
+    // make sure server is started
+    sleep_until(Instant::now() + Duration::from_millis(500)).await;
+
+    // test
+    info!("begin to create files");
+    for i in 0..100 {
+        // create in server 0
+        tokio::spawn(fs::write(
+            server_path(i % 2).join(format!("test{}.txt", i)),
+            format!("test{}", i),
+        ));
+    }
+
+    // make sure that all servers are inited
+    sleep_until(Instant::now() + Duration::from_millis(500)).await;
+
+    join_all(handles).await;
+}

@@ -4,9 +4,9 @@ use serde::{Deserialize, Serialize};
 use tracing::{info, instrument};
 
 use crate::{
-    cell::CellType,
     comm::{Comm, Request, Response},
     path::RelPath,
+    sync::CellType,
     time::VecTime,
 };
 

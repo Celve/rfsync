@@ -7,7 +7,10 @@ use tracing::{error, info, instrument};
 
 use crate::{path::RelPath, server::Server, time::VecTime};
 
-use super::{remote::RemoteCell, sync::SyncOp, CellType, TraCell};
+use super::{
+    remote::RemoteCell,
+    sync::{CellType, SyncCell, SyncOp},
+};
 
 #[derive(Clone)]
 pub struct CopyCell {
@@ -19,7 +22,7 @@ pub struct CopyCell {
     /// The path of the file, relative to the root sync dir.
     pub(super) rel: RelPath,
 
-    pub(super) tc: Arc<TraCell>,
+    pub(super) sc: Arc<SyncCell>,
 
     /// The modification time vector.
     pub(super) modif: VecTime,
@@ -47,19 +50,19 @@ impl CopyCell {
     /// Generate `CopyCell` tree for further synchronization.
     #[instrument]
     #[async_recursion]
-    pub async fn make(sid: usize, tc: Arc<TraCell>, rc: RemoteCell, offset: RelPath) -> Self {
-        let tc_guard = tc.lock().await;
-        let sync_op = tc_guard.get_sop(&rc);
-        let ts = tc_guard.ts;
-        drop(tc_guard);
+    pub async fn make(sid: usize, sc: Arc<SyncCell>, rc: RemoteCell, offset: RelPath) -> Self {
+        let sc_guard = sc.lock().await;
+        let sync_op = sc_guard.get_sop(&rc);
+        let ts = sc_guard.ts;
+        drop(sc_guard);
 
         info!("copy {:?}", sync_op);
 
         match sync_op {
-            SyncOp::Copy => Self::copy_from_rc(sid, offset.clone(), tc.clone(), &rc, ts).await,
-            SyncOp::Conflict => Self::conflict(sid, offset.clone(), tc.clone(), &rc, ts).await,
-            SyncOp::Recurse => Self::recurse(sid, offset.clone(), tc.clone(), &rc, ts).await,
-            SyncOp::None => Self::none(sid, offset.clone(), tc.clone(), &rc, ts).await,
+            SyncOp::Copy => Self::copy_from_rc(sid, offset.clone(), sc.clone(), &rc, ts).await,
+            SyncOp::Conflict => Self::conflict(sid, offset.clone(), sc.clone(), &rc, ts).await,
+            SyncOp::Recurse => Self::recurse(sid, offset.clone(), sc.clone(), &rc, ts).await,
+            SyncOp::None => Self::none(sid, offset.clone(), sc.clone(), &rc, ts).await,
         }
     }
 
@@ -67,7 +70,7 @@ impl CopyCell {
     pub async fn none(
         sid: usize,
         offset: RelPath,
-        tc: Arc<TraCell>,
+        sc: Arc<SyncCell>,
         rc: &RemoteCell,
         ts: usize,
     ) -> Self {
@@ -75,7 +78,7 @@ impl CopyCell {
             sid,
             offset,
             rc.rel.clone(),
-            tc,
+            sc,
             VecTime::new(),
             VecTime::new(),
             0,
@@ -93,11 +96,11 @@ impl CopyCell {
     pub async fn conflict(
         sid: usize,
         offset: RelPath,
-        tc: Arc<TraCell>,
+        sc: Arc<SyncCell>,
         rc: &RemoteCell,
         ts: usize,
     ) -> Self {
-        let path = Self::path_from_raw(sid, &tc.server, &rc.rel, &offset);
+        let path = Self::path_from_raw(sid, &sc.server, &rc.rel, &offset);
 
         let content = rc.read_file().await;
         fs::write(path, content).await.unwrap();
@@ -106,7 +109,7 @@ impl CopyCell {
             sid,
             offset,
             rc.rel.clone(),
-            tc.clone(),
+            sc.clone(),
             rc.modif.clone(),
             rc.sync.clone(),
             0,
@@ -123,11 +126,11 @@ impl CopyCell {
     pub async fn copy_from_rc(
         sid: usize,
         offset: RelPath,
-        tc: Arc<TraCell>,
+        sc: Arc<SyncCell>,
         rc: &RemoteCell,
         ts: usize,
     ) -> Self {
-        let path = Self::path_from_raw(sid, &tc.server, &rc.rel, &offset);
+        let path = Self::path_from_raw(sid, &sc.server, &rc.rel, &offset);
 
         let children = if rc.ty == CellType::Dir {
             // begin to watch
@@ -137,14 +140,14 @@ impl CopyCell {
 
             let mut handles = Vec::new();
             for (path, _) in rc.children.iter() {
-                let tc = {
-                    let mut tc_guard = tc.lock().await;
-                    if tc_guard.has_child(path) {
-                        tc_guard.get_child(path).unwrap()
+                let sc = {
+                    let mut sc_guard = sc.lock().await;
+                    if sc_guard.has_child(path) {
+                        sc_guard.get_child(path).unwrap()
                     } else {
-                        let tc = TraCell::empty(&tc.server, path).await;
-                        tc_guard.add_child(tc.clone());
-                        tc
+                        let sc = SyncCell::empty(&sc.server, path).await;
+                        sc_guard.add_child(sc.clone());
+                        sc
                     }
                 };
                 let path = path.clone();
@@ -152,7 +155,7 @@ impl CopyCell {
                 let offset = offset.clone();
                 handles.push(tokio::spawn(async move {
                     let rc = RemoteCell::from_path(addr, path.clone()).await;
-                    Self::copy_from_rc(sid, offset.clone(), tc, &rc, ts).await
+                    Self::copy_from_rc(sid, offset.clone(), sc, &rc, ts).await
                 }));
             }
 
@@ -176,7 +179,7 @@ impl CopyCell {
             sid,
             offset,
             rc.rel.clone(),
-            tc.clone(),
+            sc.clone(),
             rc.modif.clone(),
             rc.sync.clone(),
             rc.crt,
@@ -194,11 +197,11 @@ impl CopyCell {
     pub async fn recurse(
         sid: usize,
         offset: RelPath,
-        tc: Arc<TraCell>,
+        sc: Arc<SyncCell>,
         rc: &RemoteCell,
         ts: usize,
     ) -> Self {
-        let path = Self::path_from_raw(sid, &tc.server, &rc.rel, &offset);
+        let path = Self::path_from_raw(sid, &sc.server, &rc.rel, &offset);
         if let Err(e) = fs::create_dir_all(&path).await {
             error!("{:?}", e);
         }
@@ -209,7 +212,7 @@ impl CopyCell {
             sid,
             offset.clone(),
             rc.rel.clone(),
-            tc.clone(),
+            sc.clone(),
             rc.modif.clone(),
             rc.sync.clone(),
             rc.crt,
@@ -220,8 +223,8 @@ impl CopyCell {
         )
         .await;
         let mut handles = Vec::new();
-        let mut tc_guard = tc.lock().await;
-        for (path, child) in tc_guard.children.iter() {
+        let mut sc_guard = sc.lock().await;
+        for (path, child) in sc_guard.children.iter() {
             if child.lock().await.is_existing() {
                 let path = path.clone();
                 let addr = rc.addr.clone();
@@ -235,15 +238,15 @@ impl CopyCell {
             }
         }
         for (path, _) in rc.children.iter() {
-            if !tc_guard.children.contains_key(path) {
-                let tc = TraCell::empty(&tc.server, path).await;
-                tc_guard.add_child(tc.clone());
+            if !sc_guard.children.contains_key(path) {
+                let sc = SyncCell::empty(&sc.server, path).await;
+                sc_guard.add_child(sc.clone());
                 let path = path.clone();
                 let addr = rc.addr.clone();
                 let offset = offset.clone();
                 handles.push(tokio::spawn(Self::make(
                     sid,
-                    tc,
+                    sc,
                     RemoteCell::from_path(addr, path).await,
                     offset,
                 )));
@@ -266,7 +269,7 @@ impl CopyCell {
         sid: usize,
         offset: RelPath,
         rel: RelPath,
-        tc: Arc<TraCell>,
+        sc: Arc<SyncCell>,
         modif: VecTime,
         sync: VecTime,
         crt: usize,
@@ -279,7 +282,7 @@ impl CopyCell {
             sid,
             offset,
             rel,
-            tc,
+            sc,
             modif,
             sync,
             crt,
@@ -291,7 +294,7 @@ impl CopyCell {
     }
 
     pub fn path(&self) -> PathBuf {
-        Self::path_from_raw(self.sid, &self.tc.server, &self.rel, &self.offset)
+        Self::path_from_raw(self.sid, &self.sc.server, &self.rel, &self.offset)
     }
 
     pub fn path_from_raw(

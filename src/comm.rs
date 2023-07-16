@@ -6,7 +6,7 @@ use tokio::{
     net::TcpStream,
 };
 
-use crate::{cell::remote::RemoteCell, path::RelPath, peer::Peer};
+use crate::{path::RelPath, peer::Peer, remote::RemoteCell};
 
 #[derive(Deserialize, Serialize, Debug)]
 pub enum Request {

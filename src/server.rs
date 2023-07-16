@@ -20,18 +20,18 @@ use tokio::{
 use tracing::{info, instrument};
 
 use crate::{
-    cell::TraCell,
     comm::{Request, Response},
     path::{RelPath, RootPath},
     peer::Peer,
+    sync::SyncCell,
     watcher::Watcher,
 };
 
 pub struct Server {
     pub addr: SocketAddr,
     pub root: RootPath,
-    map: RwLock<HashMap<RelPath, Weak<TraCell>>>,
-    placeholder: Mutex<MaybeUninit<Arc<TraCell>>>,
+    map: RwLock<HashMap<RelPath, Weak<SyncCell>>>,
+    placeholder: Mutex<MaybeUninit<Arc<SyncCell>>>,
 
     /// Other servers.
     pub peers: RwLock<Vec<Peer>>,
@@ -58,10 +58,10 @@ impl Server {
             id,
         });
 
-        // put tc into place holder without initing
-        let tc = TraCell::empty(&server, &RelPath::default()).await;
-        server.placeholder.lock().await.write(tc.clone());
-        server.add_tc(&tc).await;
+        // put scinto place holder without initing
+        let sc = SyncCell::empty(&server, &RelPath::default()).await;
+        server.placeholder.lock().await.write(sc.clone());
+        server.add_sc(&sc).await;
 
         server
     }
@@ -86,38 +86,38 @@ impl Server {
 // interface for local modification
 impl Server {
     pub async fn init(self: Arc<Self>) {
-        let tc = self.clone().make_tc(&RelPath::default()).await;
-        tc.clone()
+        let sc = self.clone().make_sc(&RelPath::default()).await;
+        sc.clone()
             .create(self.time.fetch_add(1, Ordering::AcqRel))
             .await;
-        tc.broadcast().await;
+        sc.broadcast().await;
     }
 
     pub async fn create(self: Arc<Self>, rel: RelPath) {
-        let tc = self.clone().make_tc(&rel).await;
-        tc.clone()
+        let sc = self.clone().make_sc(&rel).await;
+        sc.clone()
             .create(self.time.fetch_add(1, Ordering::AcqRel))
             .await;
-        tc.clone().sendup_meta().await;
-        tc.clone().broadcast().await;
+        sc.clone().sendup_meta().await;
+        sc.clone().broadcast().await;
     }
 
     pub async fn remove(self: Arc<Self>, rel: RelPath) {
-        let tc = self.clone().make_tc(&rel).await;
-        tc.clone()
+        let sc = self.clone().make_sc(&rel).await;
+        sc.clone()
             .remove(self.time.fetch_add(1, Ordering::AcqRel))
             .await;
-        tc.clone().sendup_meta().await;
-        tc.clone().broadcast().await;
+        sc.clone().sendup_meta().await;
+        sc.clone().broadcast().await;
     }
 
     pub async fn modify(self: Arc<Self>, rel: RelPath) {
-        let tc = self.clone().make_tc(&rel).await;
-        tc.clone()
+        let sc = self.clone().make_sc(&rel).await;
+        sc.clone()
             .modify(self.time.fetch_add(1, Ordering::AcqRel))
             .await;
-        tc.clone().sendup_meta().await;
-        tc.clone().broadcast().await;
+        sc.clone().sendup_meta().await;
+        sc.clone().broadcast().await;
     }
 }
 
@@ -142,8 +142,8 @@ impl Server {
                     info!("{:?} recvs {:?}", server, req);
                     match req {
                         Request::ReadCell(path) => {
-                            let cell = server.get_tc(&path).await.expect("there should be one tc");
-                            let res = Response::Cell(cell.into_rc(server.addr).await);
+                            let sc = server.get_sc(&path).await.expect("there should be one tc");
+                            let res = Response::Cell(sc.into_rc(server.addr).await);
                             let res = bincode::serialize(&res).unwrap();
                             stream.write(&res).await.unwrap();
                         }
@@ -160,8 +160,8 @@ impl Server {
                             stream.write(&res).await.unwrap();
                         }
                         Request::SyncCell(peer, path) => {
-                            let tc = server.make_tc(&path).await;
-                            tc.sync(peer.addr).await;
+                            let sc = server.make_sc(&path).await;
+                            sc.sync(peer.addr).await;
                             let res = bincode::serialize(&Response::Sync).unwrap();
                             stream.write(&res).await.unwrap();
                         }
@@ -177,7 +177,7 @@ impl Server {
 
 impl Server {
     /// Get the `SyncCell` from the server. Return `None` when there is none.
-    pub async fn get_tc(&self, path: &RelPath) -> Option<Arc<TraCell>> {
+    pub async fn get_sc(&self, path: &RelPath) -> Option<Arc<SyncCell>> {
         self.map
             .read()
             .await
@@ -189,26 +189,26 @@ impl Server {
     /// Otherwise, create a new one with the given path.
     /// All missing parent would be created likewise.
     #[async_recursion]
-    pub async fn make_tc(self: Arc<Self>, path: &RelPath) -> Arc<TraCell> {
-        let tc = self.get_tc(path).await;
-        if let Some(tc) = tc {
-            tc
+    pub async fn make_sc(self: Arc<Self>, path: &RelPath) -> Arc<SyncCell> {
+        let sc = self.get_sc(path).await;
+        if let Some(sc) = sc {
+            sc
         } else {
             // make sure again, because the lock is released
-            let parent = self.clone().make_tc(&path.parent()).await;
+            let parent = self.clone().make_sc(&path.parent()).await;
             let mut parent_guard = parent.lock().await;
             if parent_guard.children.contains_key(&path) {
                 parent_guard.children.get(&path).unwrap().clone()
             } else {
-                let tc = TraCell::empty(&self, path).await;
-                parent_guard.children.insert(path.clone(), tc.clone());
-                tc
+                let sc = SyncCell::empty(&self, path).await;
+                parent_guard.children.insert(path.clone(), sc.clone());
+                sc
             }
         }
     }
 
     /// Add the `SyncCell` to the server `HashMap`.
-    pub async fn add_tc(&self, cell: &Arc<TraCell>) {
+    pub async fn add_sc(&self, cell: &Arc<SyncCell>) {
         self.map
             .write()
             .await

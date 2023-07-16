@@ -65,7 +65,7 @@ impl TraCell {
                         if let Some(fname) = fname {
                             // modify the filename
                             let mut fname = String::from(fname.to_str().unwrap());
-                            fname.push_str(".bak");
+                            fname.push_str(".rfsync");
                             bak.set_file_name(fname);
                             info!("rename {:?} -> {:?}", cc.path(), bak);
 

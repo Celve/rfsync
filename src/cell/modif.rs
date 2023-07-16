@@ -40,6 +40,12 @@ impl TraCell {
                 if let Ok(mut stream) = dir {
                     while let Some(entry) = stream.next_entry().await.unwrap() {
                         let path = AbsPath::new(entry.path()).sub(&self.server.root).unwrap();
+
+                        // ignore all bak files
+                        if let Some(ext) = path.extension() && ext == "rfsync" {
+                            continue;
+                        }
+
                         let child = if let Some(child) = self_guard.get_child(&path) {
                             child
                         } else {

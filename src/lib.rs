@@ -1,3 +1,5 @@
+#![feature(let_chains)]
+
 pub mod cell;
 pub mod comm;
 pub mod path;

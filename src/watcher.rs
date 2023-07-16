@@ -99,10 +99,23 @@ impl Watcher {
         let mut i = 0;
         while i < len {
             let event = &events[i];
+
+            // ignore those conflict files
+            if !event.mask.contains(EventMask::ISDIR) {
+                if let Some(path) = event.name {
+                    let path = PathBuf::from(path);
+                    if Self::is_bak(&path) {
+                        i += 1;
+                        continue;
+                    }
+                }
+            }
+
             if i < len - 1 && self.is_ignored(event, &events[i + 1]) {
                 i += 2;
             } else {
                 info!("{:?}", event);
+
                 let (prel, is_src) = self.wd2pair.get(&event.wd).map(|x| x.clone()).unwrap();
                 let rel = prel.add(&event.name.map_or(RelPath::default(), |x| RelPath::from(x)));
 
@@ -144,14 +157,8 @@ impl Watcher {
             self.add_watch(rel, false);
         }
 
-        if event.mask.contains(EventMask::MOVED_FROM) {
-            todo!()
-        } else if event.mask.contains(EventMask::MOVED_TO) {
-            todo!()
-        } else {
-            // the watch descriptor is no longer valid
-            self.wd2pair.remove(&event.wd);
-        }
+        // the watch descriptor is no longer validwssws
+        self.wd2pair.remove(&event.wd);
     }
 
     /// Add watch on the corresponding relative path.
@@ -201,6 +208,14 @@ impl Watcher {
             let (lhs_rel, lhs_src) = self.wd2pair.get(&lhs.wd).unwrap();
             let (rhs_rel, rhs_src) = self.wd2pair.get(&rhs.wd).unwrap();
             lhs_src != rhs_src && lhs_rel == rhs_rel
+        } else {
+            false
+        }
+    }
+
+    fn is_bak(path: &PathBuf) -> bool {
+        if let Some(ext) = path.extension() {
+            ext == "rfsync"
         } else {
             false
         }

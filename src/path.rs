@@ -61,6 +61,10 @@ impl RelPath {
     pub fn as_delta_path_buf(&self) -> PathBuf {
         self.path.clone()
     }
+
+    pub fn extension(&self) -> Option<&OsStr> {
+        self.path.extension()
+    }
 }
 
 impl From<&PathBuf> for RelPath {

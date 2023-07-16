@@ -163,7 +163,7 @@ async fn sync_diff_modif_hard() {
 }
 
 #[tokio::test]
-async fn conflict_sync() {
+async fn single_conflict() {
     // init the subscriber
     let subscriber = tracing_subscriber::fmt()
         .compact()
@@ -193,6 +193,54 @@ async fn conflict_sync() {
     fs::write(server_path(1).join("test.txt"), "test1")
         .await
         .unwrap();
+
+    // make sure that all servers are inited
+    sleep_until(Instant::now() + Duration::from_millis(500)).await;
+
+    join_all(handles).await;
+}
+
+#[tokio::test]
+async fn merge_single_conflict() {
+    // init the subscriber
+    let subscriber = tracing_subscriber::fmt()
+        .compact()
+        .with_file(true)
+        .with_line_number(true)
+        .finish();
+    tracing::subscriber::set_global_default(subscriber).unwrap();
+
+    init_tmp_dirs().await;
+    init_src_dirs(2).await;
+
+    // make sure test env is cleared
+    sleep_until(Instant::now() + Duration::from_millis(500)).await;
+
+    // init two server
+    let (_, handles) = generate_server(2).await;
+
+    // make sure server is started
+    sleep_until(Instant::now() + Duration::from_millis(500)).await;
+
+    // test
+    info!("begin to create files");
+    fs::write(server_path(0).join("test.txt"), "test0")
+        .await
+        .unwrap();
+
+    fs::write(server_path(1).join("test.txt"), "test1")
+        .await
+        .unwrap();
+
+    // make sure that all servers are inited
+    sleep_until(Instant::now() + Duration::from_millis(500)).await;
+
+    fs::rename(
+        server_path(0).join("test.txt.rfsync"),
+        server_path(0).join("test.txt"),
+    )
+    .await
+    .unwrap();
 
     // make sure that all servers are inited
     sleep_until(Instant::now() + Duration::from_millis(500)).await;

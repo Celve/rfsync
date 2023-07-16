@@ -234,7 +234,7 @@ impl Debug for TraCell {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let self_guard = self.try_lock();
 
-        let mut d = f.debug_struct("SyncCell");
+        let mut d = f.debug_struct("TraCell");
         d.field("rel", &self.rel);
 
         if let Ok(self_guard) = self_guard {

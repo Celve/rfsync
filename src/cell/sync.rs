@@ -61,12 +61,22 @@ impl TraCell {
 
                     SyncOp::Conflict => {
                         let mut bak = self.path().as_path_buf();
-                        bak.push(".bak");
-                        info!("rename {:?} -> {:?}", cc.path(), bak);
-                        if let Err(e) = fs::rename(cc.path(), bak).await {
-                            error!("{:?}", e);
+                        let fname = bak.file_name();
+                        if let Some(fname) = fname {
+                            // modify the filename
+                            let mut fname = String::from(fname.to_str().unwrap());
+                            fname.push_str(".bak");
+                            bak.set_file_name(fname);
+                            info!("rename {:?} -> {:?}", cc.path(), bak);
+
+                            // check whether the rename procedure is successful
+                            if let Err(e) = fs::rename(cc.path(), &bak).await {
+                                error!("{:?} with {:?}; and {:?}", e, cc.path(), bak);
+                            }
+                            self_guard.reshape_from_cc(&cc);
+                        } else {
+                            error!("{:?} is not a file", bak);
                         }
-                        self_guard.reshape_from_cc(&cc);
                     }
 
                     SyncOp::Recurse => {

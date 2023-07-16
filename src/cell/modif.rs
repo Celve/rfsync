@@ -55,15 +55,16 @@ impl TraCell {
                 }
 
                 // wait for all children to finish
+                info!("create {:?}", self_guard);
                 drop(self_guard);
                 join_all(handles).await;
                 self.lock().await.sum_children().await;
             } else {
                 // file
                 self_guard.ty = CellType::File;
+                info!("create {:?}", self_guard);
                 drop(self_guard);
             }
-            info!("create {:?}", self);
         } else {
             drop(self_guard);
             // there might be some other file system changes

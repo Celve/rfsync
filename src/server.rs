@@ -11,16 +11,12 @@ use std::{
 
 use async_recursion::async_recursion;
 use tokio::{
-    fs::File,
-    io::{AsyncReadExt, AsyncWriteExt},
-    net::TcpListener,
     sync::{Mutex, RwLock},
     task::JoinHandle,
 };
-use tracing::{info, instrument};
 
 use crate::{
-    comm::{Request, Response},
+    listener::Listener,
     path::{RelPath, RootPath},
     peer::Peer,
     sync::SyncCell,
@@ -70,12 +66,13 @@ impl Server {
     pub fn run(self: &Arc<Self>) -> Vec<JoinHandle<()>> {
         tokio::spawn(self.clone().init());
 
-        let listen_handle = tokio::spawn(self.clone().listen());
+        let srv = Arc::downgrade(self);
+        let listener = Listener::new(self.addr, srv.clone());
+        let listen_handle = tokio::spawn(listener.listen());
 
-        let server = Arc::downgrade(self);
         let src = self.root.clone();
         let tmp = self.tmp_path();
-        let mut watcher = Watcher::new(src, tmp, server);
+        let mut watcher = Watcher::new(src, tmp, srv);
         watcher.init();
         let watch_handle = tokio::task::spawn_blocking(move || watcher.watch());
 
@@ -118,60 +115,6 @@ impl Server {
             .await;
         sc.clone().sendup_meta().await;
         sc.clone().broadcast().await;
-    }
-}
-
-impl Server {
-    /// Listen to the upcoming connections.
-    #[instrument]
-    pub async fn listen(self: Arc<Self>) {
-        let listener = TcpListener::bind(self.addr).await.unwrap();
-
-        info!("listener started");
-
-        loop {
-            let (mut stream, _) = listener.accept().await.unwrap();
-            let server = self.clone();
-
-            tokio::spawn(async move {
-                let mut buf = Vec::new();
-                let n = stream.read_to_end(&mut buf).await.unwrap();
-
-                if n != 0 {
-                    let req = bincode::deserialize::<Request>(&buf).unwrap();
-                    info!("{:?} recvs {:?}", server, req);
-                    match req {
-                        Request::ReadCell(path) => {
-                            let sc = server.get_sc(&path).await.expect("there should be one tc");
-                            let res = Response::Cell(sc.into_rc(server.addr).await);
-                            let res = bincode::serialize(&res).unwrap();
-                            stream.write(&res).await.unwrap();
-                        }
-                        Request::ReadFile(path) => {
-                            // TODO: I should not use unwrap here
-                            let path = &server.root + &path;
-                            let mut file = File::open(path.as_path_buf()).await.unwrap();
-
-                            // TODO: use frame to optimize
-                            let mut buf = Vec::new();
-                            file.read_to_end(&mut buf).await.unwrap();
-                            let res = Response::File(buf);
-                            let res = bincode::serialize(&res).unwrap();
-                            stream.write(&res).await.unwrap();
-                        }
-                        Request::SyncCell(peer, path) => {
-                            let sc = server.make_sc(&path).await;
-                            sc.sync(peer.addr).await;
-                            let res = bincode::serialize(&Response::Sync).unwrap();
-                            stream.write(&res).await.unwrap();
-                        }
-                    }
-                    stream.shutdown().await.unwrap();
-                } else {
-                    println!("Find a empty connection");
-                }
-            });
-        }
     }
 }
 

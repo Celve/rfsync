@@ -70,7 +70,7 @@ impl Buffer for PageHandle {
         let bytes: &[u8; std::mem::size_of::<Self::Value>()] =
             unsafe { std::mem::transmute(buffer.value()) };
 
-        let path = config.dnode_path(*nid);
+        let path = config.file_path(*nid);
         let file = OpenOptions::new()
             .create(true)
             .write(true)
@@ -82,7 +82,7 @@ impl Buffer for PageHandle {
 
     fn from_fs(config: &SyncFsConfig, key: &Self::Key) -> Result<Self, c_int> {
         let (nid, offset) = key;
-        let path = config.dnode_path(*nid);
+        let path = config.file_path(*nid);
         if let Ok(file) = File::open(&path) {
             // do conversion
             let mut bytes = [0; std::mem::size_of::<Self::Value>()];
@@ -103,7 +103,7 @@ impl Buffer for PageHandle {
     fn fsync(&mut self, config: &SyncFsConfig) {
         if self.is_dirty {
             let (nid, offset) = self.key();
-            let path = config.dnode_path(nid);
+            let path = config.file_path(nid);
             info!("[file] fsync page ({}, {}) to {:?}", nid, offset, path);
 
             let bytes: &[u8; std::mem::size_of::<Self::Value>()] =

@@ -122,7 +122,7 @@ impl Metadata {
         self.nlink -= 1;
 
         if self.nlink == 0 && self.fhc == 0 {
-            fs::remove_file(config.inode_path(self.nid)).unwrap();
+            fs::remove_file(config.meta_path(self.nid)).unwrap();
         }
     }
 
@@ -133,7 +133,7 @@ impl Metadata {
     pub fn close(&mut self, config: &SyncFsConfig) {
         self.fhc -= 1;
         if self.nlink == 0 && self.fhc == 0 {
-            fs::remove_file(config.dnode_path(self.nid)).unwrap();
+            fs::remove_file(config.meta_path(self.nid)).unwrap();
         }
     }
 
@@ -199,13 +199,13 @@ impl Buffer for MetadataHandle {
         let buffer = Self::new(value);
         let bytes: &[u8; std::mem::size_of::<Self::Value>()] =
             unsafe { std::mem::transmute(buffer.value()) };
-        let path = config.inode_path(*key);
+        let path = config.meta_path(*key);
         fs::write(&path, bytes).unwrap();
         buffer
     }
 
     fn from_fs(config: &SyncFsConfig, key: &Self::Key) -> Result<Self, c_int> {
-        let path = config.inode_path(*key);
+        let path = config.meta_path(*key);
         if let Ok(file) = File::open(&path) {
             // do conversion
             let mut bytes = [0; std::mem::size_of::<Self::Value>()];
@@ -225,7 +225,7 @@ impl Buffer for MetadataHandle {
 
     fn fsync(&mut self, config: &SyncFsConfig) {
         if self.is_dirty {
-            let path = config.inode_path(self.key());
+            let path = config.meta_path(self.key());
             let bytes: &[u8; std::mem::size_of::<Self::Value>()] =
                 unsafe { std::mem::transmute(self.value()) };
 

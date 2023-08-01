@@ -11,12 +11,12 @@ use serde::{Deserialize, Serialize};
 use super::{buffer::Buffer, fs::SyncFsConfig, meta::FileTy};
 
 #[derive(Default, Deserialize, Serialize)]
-pub struct Dents {
+pub struct Dir {
     entries: BTreeMap<String, (u64, FileTy)>,
 }
 
 #[derive(Default)]
-pub struct DentsHandle {
+pub struct DirHandle {
     /// The inode id of the directory.
     nid: u64,
 
@@ -24,10 +24,10 @@ pub struct DentsHandle {
     is_dirty: bool,
 
     /// The memory representation of directory entries.
-    dents: Dents,
+    dir: Dir,
 }
 
-impl Dents {
+impl Dir {
     pub fn new() -> Self {
         Self {
             entries: BTreeMap::new(),
@@ -59,37 +59,37 @@ impl Dents {
     }
 }
 
-impl DentsHandle {
-    pub fn new(nid: u64, dents: Dents) -> Self {
+impl DirHandle {
+    pub fn new(nid: u64, dir: Dir) -> Self {
         Self {
             nid,
             is_dirty: false,
-            dents,
+            dir,
         }
     }
 }
 
-impl Deref for DentsHandle {
-    type Target = Dents;
+impl Deref for DirHandle {
+    type Target = Dir;
 
     fn deref(&self) -> &Self::Target {
-        &self.dents
+        &self.dir
     }
 }
 
-impl DerefMut for DentsHandle {
+impl DerefMut for DirHandle {
     fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.dents
+        &mut self.dir
     }
 }
 
-impl Buffer for DentsHandle {
+impl Buffer for DirHandle {
     type Key = u64;
-    type Value = Dents;
+    type Value = Dir;
 
     fn empty(config: &SyncFsConfig, key: &Self::Key) -> Self {
         let value = Self::Value::default();
-        let path = config.dnode_path(*key);
+        let path = config.dir_path(*key);
         let buffer = Self::new(*key, value);
         let bytes = bincode::serialize(buffer.value()).unwrap();
         // This is correct due to the fact that nid is not recycled.
@@ -98,7 +98,7 @@ impl Buffer for DentsHandle {
     }
 
     fn from_fs(config: &SyncFsConfig, key: &Self::Key) -> Result<Self, c_int> {
-        let path = config.dnode_path(*key);
+        let path = config.dir_path(*key);
         if let Ok(file) = File::open(&path) {
             // do conversion
             let value: Self::Value = bincode::deserialize_from(file).unwrap();
@@ -116,7 +116,7 @@ impl Buffer for DentsHandle {
 
     fn fsync(&mut self, config: &SyncFsConfig) {
         if self.is_dirty {
-            let path = config.dnode_path(self.key());
+            let path = config.dir_path(self.key());
             let bytes = bincode::serialize(self.value()).unwrap();
 
             // this is correct due to the fact that nid is not recycled
@@ -132,6 +132,6 @@ impl Buffer for DentsHandle {
     }
 
     fn value(&self) -> &Self::Value {
-        &self.dents
+        &self.dir
     }
 }

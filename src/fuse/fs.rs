@@ -14,7 +14,7 @@ use log::{debug, error, warn};
 
 use super::{
     buffer::BufferPool,
-    dents::DentsHandle,
+    dir::DirHandle,
     meta::{FileTy, MetadataHandle},
 };
 
@@ -76,7 +76,7 @@ pub struct SyncFs {
     mbp: BufferPool<MetadataHandle>,
 
     /// The cache for dir entries.
-    dbp: BufferPool<DentsHandle>,
+    dbp: BufferPool<DirHandle>,
 
     /// The pool of latches for files. Currently, any write towards the file would lock it first.
     lp: RwLock<HashMap<u64, RwLock<()>>>,
@@ -87,26 +87,31 @@ impl SyncFsConfig {
         Self { fs_path, is_direct }
     }
 
-    /// Return the true path of the dnode with the given id.
-    /// In the current design, the did is the same as the iid.
-    pub(super) fn dnode_path(&self, nid: u64) -> PathBuf {
-        self.dnodes_path().join(nid.to_string())
-    }
-
     /// Return the true path of the inode with the given id.
     /// In the current design, the iid is the same as the did.
-    pub(super) fn inode_path(&self, nid: u64) -> PathBuf {
-        self.inodes_path().join(nid.to_string())
-    }
-
-    /// Return the path of the directory containing the dnodes.
-    pub(super) fn dnodes_path(&self) -> PathBuf {
-        self.fs_path.join("dnodes")
+    pub(super) fn meta_path(&self, nid: u64) -> PathBuf {
+        self.metas_path().join(nid.to_string())
     }
 
     /// Return the path of the directory containing the inodes.
-    pub(super) fn inodes_path(&self) -> PathBuf {
-        self.fs_path.join("inodes")
+    pub(super) fn metas_path(&self) -> PathBuf {
+        self.fs_path.join("meta")
+    }
+
+    pub(super) fn dir_path(&self, nid: u64) -> PathBuf {
+        self.dirs_path().join(nid.to_string())
+    }
+
+    pub(super) fn dirs_path(&self) -> PathBuf {
+        self.fs_path.join("dir")
+    }
+
+    pub(super) fn file_path(&self, nid: u64) -> PathBuf {
+        self.files_path().join(nid.to_string())
+    }
+
+    pub(super) fn files_path(&self) -> PathBuf {
+        self.fs_path.join("file")
     }
 
     /// Return the path of the superblock file.
@@ -171,8 +176,9 @@ impl SyncFs {
         _req: &fuser::Request<'_>,
         _config: &mut fuser::KernelConfig,
     ) -> Result<(), c_int> {
-        fs::create_dir_all(self.config.inodes_path()).unwrap();
-        fs::create_dir_all(self.config.dnodes_path()).unwrap();
+        fs::create_dir_all(self.config.metas_path()).unwrap();
+        fs::create_dir_all(self.config.dirs_path()).unwrap();
+        fs::create_dir_all(self.config.files_path()).unwrap();
 
         // init next node id from possible superblock
         let sbp = self.config.superblock_path();
@@ -187,7 +193,7 @@ impl SyncFs {
         }
 
         // create the root dir representation if there is none
-        if fs::metadata(self.config.inode_path(ROOT_DIR_NID)).is_err() {
+        if fs::metadata(self.config.meta_path(ROOT_DIR_NID)).is_err() {
             // setup metadata
             let mhandle = self.mbp.create(&ROOT_DIR_NID)?;
             let mut meta = mhandle.data_mut();
@@ -273,7 +279,7 @@ impl SyncFs {
         meta.create(now, file_ty, mode as u16, req.uid(), req.gid());
 
         // write content
-        let dpath = self.config.dnode_path(nid);
+        let dpath = self.config.file_path(nid);
         fs::write(&dpath, &[]).unwrap();
 
         Ok(FuseEntry::new(Duration::new(0, 0), meta.into_attr(), 0))
@@ -554,7 +560,7 @@ impl SyncFs {
             meta.size = size;
 
             // modify data
-            let dpath = self.config.dnode_path(ino);
+            let dpath = self.config.file_path(ino);
             let file = OpenOptions::new()
                 .write(true)
                 .open(&dpath)
@@ -686,7 +692,7 @@ impl SyncFs {
         flags: i32,
         lock_owner: Option<u64>,
     ) -> Result<Vec<u8>, c_int> {
-        let dpath = self.config.dnode_path(ino);
+        let dpath = self.config.file_path(ino);
 
         // metadata modification
         {
@@ -733,7 +739,7 @@ impl SyncFs {
         flags: i32,
         lock_owner: Option<u64>,
     ) -> Result<u32, c_int> {
-        let dpath = self.config.dnode_path(ino);
+        let dpath = self.config.file_path(ino);
 
         // metadata modification
         {

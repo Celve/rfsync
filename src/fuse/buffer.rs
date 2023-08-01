@@ -154,7 +154,7 @@ where
             Ok(bid)
         } else {
             // look for lru
-            if let Some((key, bid)) = self.lru.pop_lru() {
+            if let Some((_, bid)) = self.lru.pop_lru() {
                 Ok(bid)
             } else {
                 Err(libc::ENOBUFS)

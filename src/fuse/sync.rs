@@ -1,26 +1,20 @@
-use log::error;
 use std::{
-    cmp::{max, min},
     collections::HashMap,
     fs::{File, OpenOptions},
     io::{BufReader, BufWriter, Read, Seek, SeekFrom, Write},
-    ops::Deref,
     path::PathBuf,
-    sync::{
-        atomic::{AtomicUsize, Ordering},
-        Arc, Mutex, RwLock,
-    },
+    sync::{atomic::AtomicUsize, Mutex, RwLock},
     time::{Duration, SystemTime},
 };
+use std::{ffi::OsStr, fs};
 
 use fuser::{self, FileAttr, Filesystem};
 use libc::{self, c_int};
-use log::{debug, info, warn};
-use std::{ffi::OsStr, fs};
+use log::{debug, error, warn};
 
 use super::{
     buffer::BufferPool,
-    node::{Dents, DentsHandle, FileTy, Metadata, MetadataHandle, PageHandle, PAGE_SIZE},
+    node::{DentsHandle, FileTy, MetadataHandle},
 };
 
 /// The node id of root directory.
@@ -82,6 +76,9 @@ pub struct SyncFs {
 
     /// The cache for dir entries.
     dbp: BufferPool<DentsHandle>,
+
+    /// The pool of latches for files. Currently, any write towards the file would lock it first.
+    lp: RwLock<HashMap<u64, RwLock<()>>>,
 }
 
 impl SyncFsConfig {
@@ -146,6 +143,7 @@ impl SyncFs {
             next_file_handle: AtomicUsize::new(0),
             mbp: BufferPool::new(config.clone()),
             dbp: BufferPool::new(config.clone()),
+            lp: RwLock::new(HashMap::new()),
         };
 
         fs
@@ -688,10 +686,29 @@ impl SyncFs {
         lock_owner: Option<u64>,
     ) -> Result<Vec<u8>, c_int> {
         let dpath = self.config.dnode_path(ino);
-        let mhandle = self.mbp.fetch(&ino)?;
-        let mut meta = mhandle.data_mut();
-        meta.access(SystemTime::now());
 
+        // metadata modification
+        {
+            let mhandle = self.mbp.fetch(&ino)?;
+            let mut meta = mhandle.data_mut();
+            meta.access(SystemTime::now());
+        }
+
+        let mut lp_guard = self.lp.read().unwrap();
+        let latch = if let Some(latch) = lp_guard.get(&ino) {
+            latch
+        } else {
+            drop(lp_guard);
+
+            let mut lp_wguard = self.lp.write().unwrap();
+            lp_wguard.insert(ino, RwLock::new(()));
+            drop(lp_wguard);
+
+            lp_guard = self.lp.read().unwrap();
+            lp_guard.get(&ino).unwrap()
+        };
+
+        let _guard = latch.read().unwrap();
         if let Ok(file) = File::open(dpath) {
             let mut reader = BufReader::new(file);
             reader.seek(SeekFrom::Start(offset as u64)).unwrap();
@@ -716,16 +733,38 @@ impl SyncFs {
         lock_owner: Option<u64>,
     ) -> Result<u32, c_int> {
         let dpath = self.config.dnode_path(ino);
-        let mhandle = self.mbp.fetch(&ino)?;
-        let mut meta = mhandle.data_mut();
-        meta.modify(SystemTime::now());
 
+        // metadata modification
+        {
+            let mhandle = self.mbp.fetch(&ino)?;
+            let mut meta = mhandle.data_mut();
+            meta.modify(SystemTime::now());
+        }
+
+        let mut lp_guard = self.lp.read().unwrap();
+        let latch = if let Some(latch) = lp_guard.get(&ino) {
+            latch
+        } else {
+            drop(lp_guard);
+
+            let mut lp_wguard = self.lp.write().unwrap();
+            lp_wguard.insert(ino, RwLock::new(()));
+            drop(lp_wguard);
+
+            lp_guard = self.lp.read().unwrap();
+            lp_guard.get(&ino).unwrap()
+        };
+
+        let _guard = latch.write().unwrap();
         if let Ok(file) = File::create(&dpath) {
             let mut writer = BufWriter::new(file);
             writer.seek(SeekFrom::Start(offset as u64)).unwrap();
             let len = writer.write(data).unwrap();
             writer.flush().unwrap();
-            meta.size = fs::metadata(dpath).unwrap().len();
+
+            // modify size
+            self.mbp.fetch(&ino)?.data_mut().size = fs::metadata(dpath).unwrap().len();
+
             Ok(len as u32)
         } else {
             warn!("[file] fail to write {:?}", dpath);

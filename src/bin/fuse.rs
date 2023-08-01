@@ -3,7 +3,7 @@ use std::{fs, io::ErrorKind, path::PathBuf};
 use clap::Parser;
 use fuser::MountOption;
 use home::home_dir;
-use log::{error, info, LevelFilter};
+use log::{error, LevelFilter};
 use rfsync::fuse::sync::{SyncFs, SyncFsConfig};
 
 #[derive(Parser)]

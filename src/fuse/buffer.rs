@@ -10,7 +10,7 @@ use std::{
 use libc::c_int;
 use lru::LruCache;
 
-use super::sync::SyncFsConfig;
+use super::fs::SyncFsConfig;
 
 const BUFFER_POOL_SIZE: usize = 1024;
 

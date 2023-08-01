@@ -14,7 +14,8 @@ use log::{debug, error, warn};
 
 use super::{
     buffer::BufferPool,
-    node::{DentsHandle, FileTy, MetadataHandle},
+    dents::DentsHandle,
+    meta::{FileTy, MetadataHandle},
 };
 
 /// The node id of root directory.

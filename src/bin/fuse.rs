@@ -4,7 +4,7 @@ use clap::Parser;
 use fuser::MountOption;
 use home::home_dir;
 use log::{error, LevelFilter};
-use rfsync::fuse::sync::{SyncFs, SyncFsConfig};
+use rfsync::fuse::fs::{SyncFs, SyncFsConfig};
 
 #[derive(Parser)]
 struct Cli {

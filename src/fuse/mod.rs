@@ -1,3 +1,5 @@
 pub mod buffer;
-pub mod node;
-pub mod sync;
+pub mod dents;
+pub mod fs;
+pub mod meta;
+pub mod page;

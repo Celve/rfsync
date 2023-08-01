@@ -2,6 +2,7 @@
 
 pub mod comm;
 pub mod copy;
+pub mod fuse;
 pub mod listener;
 pub mod path;
 pub mod peer;

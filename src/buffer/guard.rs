@@ -111,6 +111,17 @@ where
         }
     }
 
+    pub async fn downgrade(self) -> BufferReadGuard<'a, K, V, D, S> {
+        let bid = self.bid;
+        let pool = self.pool;
+        pool.pin(bid).await;
+        drop(self);
+
+        let value = pool.units[bid].value.read().await;
+
+        BufferReadGuard { bid, value, pool }
+    }
+
     pub async fn destroy(mut self) {
         self.pool.release(self.bid).await;
         self.pinned = false;

@@ -2,7 +2,7 @@ use std::net::SocketAddr;
 
 use serde::{Deserialize, Serialize};
 
-use crate::server::Server;
+use crate::fuse::server::SyncServer;
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct Peer {
@@ -16,11 +16,11 @@ impl Peer {
     }
 }
 
-impl From<&Server> for Peer {
-    fn from(value: &Server) -> Self {
+impl<const S: usize> From<&SyncServer<S>> for Peer {
+    fn from(value: &SyncServer<S>) -> Self {
         Self {
-            addr: value.addr,
-            id: value.id,
+            addr: value.addr(),
+            id: value.mid(),
         }
     }
 }

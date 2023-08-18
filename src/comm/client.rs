@@ -1,4 +1,7 @@
-use std::net::SocketAddr;
+use std::{
+    net::{IpAddr, Ipv4Addr, SocketAddr},
+    path::PathBuf,
+};
 
 use serde::{Deserialize, Serialize};
 use tokio::{
@@ -6,13 +9,15 @@ use tokio::{
     net::TcpStream,
 };
 
-use crate::{path::RelPath, peer::Peer, remote::RemoteCell};
+use crate::cell::remote::RemoteCell;
+
+use super::peer::Peer;
 
 #[derive(Deserialize, Serialize, Debug)]
 pub enum Request {
-    ReadCell(RelPath),
-    ReadFile(RelPath),
-    SyncCell(Peer, RelPath),
+    ReadCell(PathBuf),
+    ReadFile(PathBuf),
+    SyncCell(Peer, PathBuf),
 }
 
 #[derive(Deserialize, Serialize)]
@@ -24,12 +29,12 @@ pub enum Response {
     Err(String),
 }
 
-#[derive(Debug)]
-pub struct Comm {
-    addr: SocketAddr,
+#[derive(Clone, Copy, Deserialize, Serialize)]
+pub struct Client {
+    pub addr: SocketAddr,
 }
 
-impl Comm {
+impl Client {
     pub fn new(addr: SocketAddr) -> Self {
         Self { addr }
     }
@@ -46,5 +51,13 @@ impl Comm {
         let mut buf = Vec::new();
         stream.read_to_end(&mut buf).await.unwrap();
         bincode::deserialize::<Response>(&buf).unwrap()
+    }
+}
+
+impl Default for Client {
+    fn default() -> Self {
+        Self {
+            addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 8080),
+        }
     }
 }

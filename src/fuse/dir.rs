@@ -1,137 +1,88 @@
 use std::{
     collections::BTreeMap,
-    fs::{self, File},
     ops::{Deref, DerefMut},
 };
 
 use libc::c_int;
-use log::warn;
 use serde::{Deserialize, Serialize};
 
-use super::{buffer::Buffer, fs::SyncFsConfig, meta::FileTy};
+use crate::buffer::guard::{BufferReadGuard, BufferWriteGuard};
 
-#[derive(Default, Deserialize, Serialize)]
-pub struct Dir {
-    entries: BTreeMap<String, (u64, FileTy)>,
-}
+use super::{disk::PrefixDiskManager, meta::FileTy};
 
-#[derive(Default)]
-pub struct DirHandle {
-    /// The inode id of the directory.
-    nid: u64,
+#[derive(Deserialize, Serialize, Default)]
+pub struct Dir(BTreeMap<String, (u64, FileTy)>);
 
-    /// Whether the content of the handle is modified.
-    is_dirty: bool,
+pub type DirDiskManager = PrefixDiskManager<u64, Dir>;
 
-    /// The memory representation of directory entries.
-    dir: Dir,
-}
+pub struct DirReadGuard<'a, const S: usize>(BufferReadGuard<'a, u64, Dir, DirDiskManager, S>);
+
+pub struct DirWriteGuard<'a, const S: usize>(BufferWriteGuard<'a, u64, Dir, DirDiskManager, S>);
 
 impl Dir {
     pub fn new() -> Self {
-        Self {
-            entries: BTreeMap::new(),
-        }
+        Self(BTreeMap::new())
     }
 
-    pub fn insert(&mut self, name: String, nid: u64, ty: FileTy) {
-        self.entries.insert(name, (nid, ty));
+    pub fn insert(&mut self, name: String, ino: u64, ty: FileTy) {
+        self.0.insert(name, (ino, ty));
     }
 
-    pub fn remove(&mut self, name: &String) -> Option<(u64, FileTy)> {
-        self.entries.remove(name)
+    pub fn remove(&mut self, name: &str) -> Option<(u64, FileTy)> {
+        self.0.remove(name)
     }
 
     pub fn get(&self, name: &str) -> Result<&(u64, FileTy), c_int> {
-        self.entries.get(name).ok_or(libc::ENOENT)
+        self.0.get(name).ok_or(libc::ENOENT)
     }
 
     pub fn iter(&self) -> impl Iterator<Item = (&String, &(u64, FileTy))> {
-        self.entries.iter()
+        self.0.iter()
     }
 
     pub fn len(&self) -> usize {
-        self.entries.len()
+        self.0.len()
     }
 
-    pub fn contains_key(&self, key: &String) -> bool {
-        self.entries.contains_key(key)
-    }
-}
-
-impl DirHandle {
-    pub fn new(nid: u64, dir: Dir) -> Self {
-        Self {
-            nid,
-            is_dirty: false,
-            dir,
-        }
+    pub fn contains_key(&self, key: &str) -> bool {
+        self.0.contains_key(key)
     }
 }
 
-impl Deref for DirHandle {
+impl<'a, const S: usize> DirReadGuard<'a, S> {
+    pub fn new(guard: BufferReadGuard<'a, u64, Dir, DirDiskManager, S>) -> Self {
+        Self(guard)
+    }
+}
+
+impl<'a, const S: usize> Deref for DirReadGuard<'a, S> {
     type Target = Dir;
 
     fn deref(&self) -> &Self::Target {
-        &self.dir
+        &self.0
     }
 }
 
-impl DerefMut for DirHandle {
+impl<'a, const S: usize> DirWriteGuard<'a, S> {
+    pub fn new(guard: BufferWriteGuard<'a, u64, Dir, DirDiskManager, S>) -> Self {
+        Self(guard)
+    }
+
+    pub async fn destroy(self) {
+        self.0.destroy().await;
+    }
+}
+
+impl<'a, const S: usize> Deref for DirWriteGuard<'a, S> {
+    type Target = Dir;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl<'a, const S: usize> DerefMut for DirWriteGuard<'a, S> {
     fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.dir
-    }
-}
-
-impl Buffer for DirHandle {
-    type Key = u64;
-    type Value = Dir;
-
-    fn empty(config: &SyncFsConfig, key: &Self::Key) -> Self {
-        let value = Self::Value::default();
-        let path = config.dir_path(*key);
-        let buffer = Self::new(*key, value);
-        let bytes = bincode::serialize(buffer.value()).unwrap();
-        // This is correct due to the fact that nid is not recycled.
-        fs::write(&path, bytes).unwrap();
-        buffer
-    }
-
-    fn from_fs(config: &SyncFsConfig, key: &Self::Key) -> Result<Self, c_int> {
-        let path = config.dir_path(*key);
-        if let Ok(file) = File::open(&path) {
-            // do conversion
-            let value: Self::Value = bincode::deserialize_from(file).unwrap();
-
-            Ok(Self::new(*key, value))
-        } else {
-            warn!("[buffer] failed to open directory {}", key);
-            Err(libc::ENOENT)
-        }
-    }
-
-    fn dirty(&mut self) {
-        self.is_dirty = true;
-    }
-
-    fn fsync(&mut self, config: &SyncFsConfig) {
-        if self.is_dirty {
-            let path = config.dir_path(self.key());
-            let bytes = bincode::serialize(self.value()).unwrap();
-
-            // this is correct due to the fact that nid is not recycled
-            if let Err(err) = fs::write(&path, &bytes) && err.kind() != std::io::ErrorKind::NotFound {
-                panic!("fsyncing dents failed: {}", err);
-            }
-            self.is_dirty = false;
-        }
-    }
-
-    fn key(&self) -> Self::Key {
-        self.nid
-    }
-
-    fn value(&self) -> &Self::Value {
-        &self.dir
+        &mut self.0
     }
 }

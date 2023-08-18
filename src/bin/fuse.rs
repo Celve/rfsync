@@ -1,40 +1,40 @@
-use std::{fs, io::ErrorKind, path::PathBuf};
+use std::{
+    fs,
+    net::{IpAddr, Ipv4Addr, SocketAddr},
+    sync::Arc,
+};
 
-use clap::Parser;
 use fuser::MountOption;
 use home::home_dir;
-use log::{error, LevelFilter};
-use rfsync::fuse::fs::{SyncFs, SyncFsConfig};
+use log::LevelFilter;
+use rfsync::fuse::fuse::SyncFuse;
 
-#[derive(Parser)]
-struct Cli {
-    /// The path of directory to be synchronized
-    mount_point: PathBuf,
-}
+const BUFFER_POOL_SIZE: usize = 1024;
 
 fn main() {
-    let cli = Cli::parse();
-    let mount_point = cli.mount_point;
-    let options = vec![
-        MountOption::FSName("syncfs".to_string()),
-        MountOption::AutoUnmount,
-        MountOption::AllowRoot,
-    ];
     env_logger::builder()
         .format_timestamp_nanos()
-        .filter_level(LevelFilter::Info)
+        .filter_level(LevelFilter::Debug)
         .init();
-    let home = home_dir().unwrap().join(".syncfs");
-    fs::create_dir_all(&home).unwrap();
-    let fs = SyncFs::new(SyncFsConfig::new(home, true));
-    let res = fuser::mount2(fs, mount_point.clone(), &options);
 
-    if let Err(e) = res {
-        // Return a special error code for permission denied, which usually indicates that
-        // "user_allow_other" is missing from /etc/fuse.conf
-        if e.kind() == ErrorKind::PermissionDenied {
-            error!("{}", e.to_string());
-            std::process::exit(2);
-        }
-    }
+    let rt = Arc::new(
+        tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .unwrap(),
+    );
+
+    let db = home_dir().unwrap().join(".rfsync");
+    fs::remove_dir_all(&db).unwrap();
+
+    let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 8080);
+    let fuse: SyncFuse<BUFFER_POOL_SIZE> = SyncFuse::new(rt, 0, db, true, addr);
+
+    let mut options = vec![MountOption::FSName("fuser".to_string())];
+    options.push(MountOption::AutoUnmount);
+    options.push(MountOption::AllowOther);
+
+    let mountpoint = "./debug";
+
+    fuser::mount2(fuse, &mountpoint, &options).unwrap();
 }

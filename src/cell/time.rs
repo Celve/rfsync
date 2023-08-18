@@ -6,7 +6,7 @@ use std::{
 use serde::{Deserialize, Serialize};
 
 /// A vector used to hold the modification/synchronization time.
-#[derive(PartialEq, Deserialize, Serialize, Clone, Debug)]
+#[derive(PartialEq, Deserialize, Serialize, Clone, Debug, Default)]
 pub struct VecTime {
     /// Map from machine id to modification/synchronization time.
     map: HashMap<usize, usize>,
@@ -17,12 +17,6 @@ impl VecTime {
         Self {
             map: HashMap::new(),
         }
-    }
-
-    pub fn init(mid: usize, time: usize) -> Self {
-        let mut map = HashMap::new();
-        map.insert(mid, time);
-        Self { map }
     }
 
     /// Extend another `VecTime` with this one, applying the conflict value with filter.

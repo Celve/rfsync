@@ -85,6 +85,10 @@ impl<'a, const S: usize> SyncCellReadGuard<'a, S> {
     ) -> Self {
         Self { guard, tree }
     }
+
+    pub async fn upgrade(self) -> SyncCellWriteGuard<'a, S> {
+        SyncCellWriteGuard::new(self.guard.upgrade().await, self.tree)
+    }
 }
 
 impl<'a, const S: usize> Deref for SyncCellReadGuard<'a, S> {

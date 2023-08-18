@@ -167,6 +167,10 @@ impl<'a, const S: usize> MetaReadGuard<'a, S> {
     pub fn new(guard: BufferReadGuard<'a, u64, Meta, MetaDiskManager, S>) -> Self {
         Self(guard)
     }
+
+    pub async fn upgrade(self) -> MetaWriteGuard<'a, S> {
+        MetaWriteGuard(self.0.upgrade().await)
+    }
 }
 
 impl<'a, const S: usize> Deref for MetaReadGuard<'a, S> {

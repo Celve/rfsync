@@ -53,6 +53,10 @@ impl<'a, const S: usize> DirReadGuard<'a, S> {
     pub fn new(guard: BufferReadGuard<'a, u64, Dir, DirDiskManager, S>) -> Self {
         Self(guard)
     }
+
+    pub async fn upgrade(self) -> DirWriteGuard<'a, S> {
+        DirWriteGuard::new(self.0.upgrade().await)
+    }
 }
 
 impl<'a, const S: usize> Deref for DirReadGuard<'a, S> {

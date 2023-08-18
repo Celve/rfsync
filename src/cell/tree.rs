@@ -10,10 +10,7 @@ use crate::{
     fuse::{consistent::Consistent, meta::FileTy},
 };
 
-use super::{
-    sync::{SyncCell, SyncCellDiskManager, SyncCellReadGuard, SyncCellWriteGuard},
-    time::VecTime,
-};
+use super::sync::{SyncCell, SyncCellDiskManager, SyncCellReadGuard, SyncCellWriteGuard};
 
 pub struct SyncTreeInner<const S: usize> {
     bp: BufferPool<u64, SyncCell, SyncCellDiskManager, S>,

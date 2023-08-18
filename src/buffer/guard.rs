@@ -1,7 +1,6 @@
 use std::{
     fmt::Display,
     hash::Hash,
-    mem::forget,
     ops::{Deref, DerefMut},
 };
 

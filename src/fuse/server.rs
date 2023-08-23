@@ -415,7 +415,7 @@ impl<const S: usize> SyncServer<S> {
             SyncOp::None => self.do_nothing_for_copy(ino, cc, tx).await,
             SyncOp::Copy => self.replace_for_copy(ino, cc, tx).await,
             SyncOp::Conflict => self.resolve_conflict_for_copy(ino, cc, tx).await,
-            SyncOp::Recurse => self.copy_recurse_down(ino, cc, tx).await,
+            SyncOp::Recurse => self.recurse_down_for_copy(ino, cc, tx).await,
         }
     }
 
@@ -553,7 +553,7 @@ impl<const S: usize> SyncServer<S> {
         todo!("resolve conflict")
     }
 
-    pub async fn copy_recurse_down(
+    pub async fn recurse_down_for_copy(
         &self,
         ino: u64,
         cc: CopyCell,

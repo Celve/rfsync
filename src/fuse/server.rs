@@ -577,9 +577,52 @@ impl<const S: usize> SyncServer<S> {
         drop(tx);
 
         let meta = meta?;
-        let mut sc = self.tree.write_by_id(&meta.sid).await?;
-        sc.merge(&cc);
-        todo!("resolve conflict")
+        let sc = self.tree.write_by_id(&meta.sid).await?;
+        if sc.calc_sync_op(&cc) == cc.sop {
+            let pino = meta.parent;
+            drop(meta);
+            drop(sc);
+
+            let (mut pmeta, mut pdir) = self.fs.modify_dir(&pino).await?;
+            let mut sc = self.tree.write_by_id(&cc.sid).await?;
+            sc.merge(&cc);
+
+            let name = format!("{}.nosync", Self::osstr2str(cc.path.file_name().unwrap()));
+            let (ino, mut tmeta) = self.fs.make_file().await?;
+
+            let mut cnt = 0;
+            let mut newname = name.clone();
+            while pdir.contains_key(&newname) {
+                cnt += 1;
+                newname = format!("{}{}", name, cnt);
+            }
+            pdir.insert(name, ino, FileTy::File);
+
+            let now = SystemTime::now();
+            tmeta.create(
+                ino,
+                pino,
+                FUSE_NONE_ID,
+                SystemTime::now(),
+                FileTy::File,
+                pmeta.perm,
+                pmeta.uid,
+                pmeta.gid,
+            );
+            pmeta.modify(now);
+
+            let mut tfile = self.fs.write_file(&ino).await?;
+            let bytes = cc.read().await;
+            tfile.write(&bytes).await.map_err(|_| libc::EIO)?;
+            tmeta.size = bytes.len() as u64;
+
+            Ok(())
+        } else {
+            drop(meta);
+            drop(sc);
+            self.sync(ino, RemoteCell::from_ow(cc.path, cc.oneway).await)
+                .await
+        }
     }
 
     pub async fn recurse_down_for_copy(
@@ -595,48 +638,55 @@ impl<const S: usize> SyncServer<S> {
 
         let mut meta = meta?;
         let mut sc = self.tree.write_by_id(&meta.sid).await?;
-        sc.substituted(&cc);
+        if sc.calc_sync_op(&cc) == cc.sop {
+            sc.substituted(&cc);
 
-        // convert file to dir if necessary
-        let mut dir = if meta.ty == FileTy::File {
-            meta.set_ty(FileTy::Dir);
-            self.fs.destroy_file(&ino).await?;
-            self.fs.create_dir(&ino).await?
-        } else {
-            self.fs.write_dir(&ino).await?
-        };
+            // convert file to dir if necessary
+            let mut dir = if meta.ty == FileTy::File {
+                meta.set_ty(FileTy::Dir);
+                self.fs.destroy_file(&ino).await?;
+                self.fs.create_dir(&ino).await?
+            } else {
+                self.fs.write_dir(&ino).await?
+            };
 
-        let now = SystemTime::now();
-        let mut cnt = cc.children.len();
-        if cnt > 0 {
-            let (tx, mut rx) = mpsc::channel(cnt);
-            for (name, cc) in cc.children {
-                let cino = if let Ok((cino, _)) = dir.get(&name) {
-                    *cino
-                } else {
-                    let (cino, mut cmeta) = if cc.ty == FileTy::File {
-                        self.fs.make_file().await?
+            let now = SystemTime::now();
+            let mut cnt = cc.children.len();
+            if cnt > 0 {
+                let (tx, mut rx) = mpsc::channel(cnt);
+                for (name, cc) in cc.children {
+                    let cino = if let Ok((cino, _)) = dir.get(&name) {
+                        *cino
                     } else {
-                        self.fs.make_dir().await?
+                        let (cino, mut cmeta) = if cc.ty == FileTy::File {
+                            self.fs.make_file().await?
+                        } else {
+                            self.fs.make_dir().await?
+                        };
+                        cmeta.create(cino, ino, cc.sid, now, cc.ty, meta.perm, meta.uid, meta.gid);
+                        dir.insert(name, cino, cc.ty);
+                        cino
                     };
-                    cmeta.create(cino, ino, cc.sid, now, cc.ty, meta.perm, meta.uid, meta.gid);
-                    dir.insert(name, cino, cc.ty);
-                    cino
-                };
-                let srv = self.clone();
-                let tx = tx.clone();
-                tokio::spawn(async move { srv.copy(cino, cc, tx).await });
-            }
+                    let srv = self.clone();
+                    let tx = tx.clone();
+                    tokio::spawn(async move { srv.copy(cino, cc, tx).await });
+                }
 
-            while let Some(_) = rx.recv().await {
-                cnt -= 1;
-                if cnt == 0 {
-                    break;
+                while let Some(_) = rx.recv().await {
+                    cnt -= 1;
+                    if cnt == 0 {
+                        break;
+                    }
                 }
             }
-        }
 
-        Ok(())
+            Ok(())
+        } else {
+            drop(meta);
+            drop(sc);
+            self.sync(ino, RemoteCell::from_ow(cc.path, cc.oneway).await)
+                .await
+        }
     }
 }
 

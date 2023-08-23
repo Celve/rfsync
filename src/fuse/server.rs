@@ -28,7 +28,7 @@ use crate::{
         copy::{CopyCell, SyncOp},
         remote::RemoteCell,
         stge::CopyStge,
-        sync::{SyncCell, SyncCellWriteGuard},
+        sync::SyncCellWriteGuard,
         tree::SyncTree,
     },
     comm::{
@@ -42,7 +42,7 @@ use super::{
     dir::{DirReadGuard, DirWriteGuard},
     file::{FileReadGuard, FileWriteGuard},
     fs::SyncFs,
-    meta::{Meta, MetaWriteGuard},
+    meta::{Meta, MetaWriteGuard, FUSE_NONE_ID},
 };
 
 pub struct SyncServer<const S: usize> {
@@ -142,14 +142,23 @@ impl<const S: usize> SyncServer<S> {
 
             // modify children
             let (ino, mut meta) = self.fs.make_file().await?;
-            let (sid, mut sc) = self
-                .tree
-                .create4parent(&mut psc, name, FileTy::File)
-                .await?;
-            drop(psc);
+
+            // modify sync cell
+            let sid = if !name.ends_with(".nosync") {
+                let (sid, mut sc) = self
+                    .tree
+                    .create4parent(&mut psc, name, FileTy::File)
+                    .await?;
+                drop(psc);
+                sc.modify(self.tree.mid, self.tree.forward().await, FileTy::File);
+                self.broadcast(sc).await;
+                sid
+            } else {
+                FUSE_NONE_ID
+            };
+
+            // modify meta
             meta.create(ino, *parent, sid, now, FileTy::File, perm, uid, gid);
-            sc.modify(self.tree.mid, self.tree.forward().await, FileTy::File);
-            self.broadcast(sc).await;
 
             // modify parent
             pmeta.modify(now);
@@ -179,13 +188,20 @@ impl<const S: usize> SyncServer<S> {
             // modify children
             let (ino, mut meta) = self.fs.make_dir().await?;
             let mut dir = self.fs.write_dir(&ino).await?;
-            let (sid, mut sc) = self.tree.create4parent(&mut psc, name, FileTy::Dir).await?;
-            drop(psc);
+
+            let sid = if !name.ends_with(".nosync") {
+                let (sid, mut sc) = self.tree.create4parent(&mut psc, name, FileTy::Dir).await?;
+                drop(psc);
+                sc.modify(self.tree.mid, self.tree.forward().await, FileTy::Dir);
+                self.broadcast(sc).await;
+                sid
+            } else {
+                FUSE_NONE_ID
+            };
+
             meta.create(ino, *parent, sid, now, FileTy::Dir, perm, uid, gid);
             dir.insert(".".to_string(), ino, FileTy::File);
             dir.insert("..".to_string(), *parent, FileTy::File);
-            sc.modify(self.tree.mid, self.tree.forward().await, FileTy::Dir);
-            self.broadcast(sc).await;
 
             // modify parent
             pmeta.modify(now);
@@ -206,9 +222,14 @@ impl<const S: usize> SyncServer<S> {
         if let Some((ino, _)) = pdir.remove(name) {
             // modify children
             let (mut meta, file) = self.fs.modify_file(&ino).await?;
-            let mut sc = self.tree.write_by_id(&meta.sid).await?;
-            sc.modify(self.tree.mid, self.tree.forward().await, FileTy::None);
-            self.broadcast(sc).await;
+
+            // modify sync cell
+            if meta.sid != FUSE_NONE_ID {
+                let mut sc = self.tree.write_by_id(&meta.sid).await?;
+                sc.modify(self.tree.mid, self.tree.forward().await, FileTy::None);
+                self.broadcast(sc).await;
+            }
+
             if meta.unlink() {
                 meta.destroy().await;
                 file.destroy().await;
@@ -233,9 +254,13 @@ impl<const S: usize> SyncServer<S> {
             let (mut meta, dir) = self.fs.modify_dir(&ino).await?;
 
             if dir.len() == 0 {
-                let mut sc = self.tree.write_by_id(&meta.sid).await?;
-                sc.modify(self.tree.mid, self.tree.forward().await, FileTy::None);
-                self.broadcast(sc).await;
+                // modify sync cell
+                if meta.sid != FUSE_NONE_ID {
+                    let mut sc = self.tree.write_by_id(&meta.sid).await?;
+                    sc.modify(self.tree.mid, self.tree.forward().await, FileTy::None);
+                    self.broadcast(sc).await;
+                }
+
                 if meta.unlink() {
                     meta.destroy().await;
                     dir.destroy().await;
@@ -288,7 +313,6 @@ impl<const S: usize> SyncServer<S> {
 
     pub async fn write(&self, ino: &u64, offset: &i64, bytes: &[u8]) -> Result<usize, c_int> {
         let (mut meta, mut file) = self.fs.modify_file(ino).await?;
-        let mut sc = self.tree.write_by_id(&meta.sid).await?;
         let now = SystemTime::now();
 
         // read from disk
@@ -302,8 +326,11 @@ impl<const S: usize> SyncServer<S> {
         meta.size = meta.size.max(*offset as u64 + len as u64);
 
         // modify sync cell
-        sc.modify(self.mid(), self.tree.forward().await, FileTy::File);
-        self.broadcast(sc).await;
+        if meta.sid != FUSE_NONE_ID {
+            let mut sc = self.tree.write_by_id(&meta.sid).await?;
+            sc.modify(self.mid(), self.tree.forward().await, FileTy::File);
+            self.broadcast(sc).await;
+        }
 
         Ok(len)
     }
@@ -344,9 +371,11 @@ impl<const S: usize> SyncServer<S> {
                 let file = self.fs.write_file(&ino).await?;
                 file.set_len(size).await.map_err(|_| libc::EIO)?;
 
-                let mut sc = self.tree.write_by_id(&meta.sid).await?;
-                sc.modify(self.mid(), self.tree.forward().await, FileTy::File);
-                self.broadcast(sc).await;
+                if meta.sid != FUSE_NONE_ID {
+                    let mut sc = self.tree.write_by_id(&meta.sid).await?;
+                    sc.modify(self.mid(), self.tree.forward().await, FileTy::File);
+                    self.broadcast(sc).await;
+                }
             }
         }
 

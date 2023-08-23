@@ -1,5 +1,6 @@
 use std::{fmt::Display, marker::PhantomData, path::PathBuf};
 
+use async_trait::async_trait;
 use tokio::fs::{self, File};
 
 use crate::buffer::disk::DiskManager;
@@ -8,7 +9,8 @@ use crate::buffer::disk::DiskManager;
 pub struct PrefixDirectDiskManager<K, V>
 where
     K: Display + Send + Sync,
-    V: FromIterator<u8>,
+    V: FromIterator<u8> + Send + Sync,
+    for<'a> &'a K: Send + Sync,
     for<'a> &'a V: IntoIterator<Item = &'a u8>,
 {
     path: PathBuf,
@@ -36,6 +38,7 @@ where
     }
 }
 
+#[async_trait]
 impl<K, V> DiskManager<K, V> for PrefixDirectDiskManager<K, V>
 where
     K: Display + Send + Sync + 'static,

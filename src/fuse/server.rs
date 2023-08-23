@@ -134,14 +134,19 @@ impl<const S: usize> SyncServer<S> {
         uid: u32,
         gid: u32,
     ) -> Result<Meta, c_int> {
+        info!("IN mknod");
         let (mut pmeta, mut pdir) = self.fs.modify_dir(parent).await?;
         let now = SystemTime::now();
+        info!("1");
 
         if !pdir.contains_key(name) {
+            info!("2 {}", pmeta.sid);
             let mut psc = self.tree.write_by_id(&pmeta.sid).await?;
+            info!("3.5");
 
             // modify children
             let (ino, mut meta) = self.fs.make_file().await?;
+            info!("4");
 
             // modify sync cell
             let sid = if !name.ends_with(".nosync") {
@@ -156,13 +161,16 @@ impl<const S: usize> SyncServer<S> {
             } else {
                 FUSE_NONE_ID
             };
+            info!("5");
 
             // modify meta
             meta.create(ino, *parent, sid, now, FileTy::File, perm, uid, gid);
+            info!("6");
 
             // modify parent
             pmeta.modify(now);
             pdir.insert(name.to_string(), ino, FileTy::File);
+            info!("OUT mknod");
 
             Ok(meta.clone())
         } else {
@@ -632,13 +640,18 @@ impl<const S: usize> SyncServer<S> {
         tx: Sender<()>,
     ) -> Result<(), c_int> {
         info!("[sync] recurse {:?} down", cc.path);
+        info!("-1 {}", ino);
         let meta = self.fs.write_meta(&ino).await;
+        info!("0");
         tx.send(()).await.unwrap();
         drop(tx);
+        info!("1");
 
         let mut meta = meta?;
         let mut sc = self.tree.write_by_id(&meta.sid).await?;
+        info!("2");
         if sc.calc_sync_op(&cc) == cc.sop {
+            info!("3");
             sc.substituted(&cc);
 
             // convert file to dir if necessary
@@ -682,6 +695,7 @@ impl<const S: usize> SyncServer<S> {
 
             Ok(())
         } else {
+            info!("a");
             drop(meta);
             drop(sc);
             self.sync(ino, RemoteCell::from_ow(cc.path, cc.oneway).await)

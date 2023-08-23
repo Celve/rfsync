@@ -7,7 +7,7 @@ use std::{
 use serde::{de::DeserializeOwned, Serialize};
 use tokio::sync::{RwLockReadGuard, RwLockWriteGuard};
 
-use super::{disk::DiskManager, pool::BufferPool};
+use super::{disk::DiskManager, pin::BufferPin};
 
 pub struct BufferReadGuard<'a, K, V, D, const S: usize>
 where
@@ -15,9 +15,8 @@ where
     V: Default + DeserializeOwned + Serialize + Send + Sync + 'static,
     D: DiskManager<K, V>,
 {
-    bid: usize,
     value: RwLockReadGuard<'a, (bool, V)>,
-    pool: &'a BufferPool<K, V, D, S>,
+    pin: Option<BufferPin<'a, K, V, D, S>>,
 }
 
 pub struct BufferWriteGuard<'a, K, V, D, const S: usize>
@@ -26,10 +25,8 @@ where
     V: Default + DeserializeOwned + Serialize + Send + Sync + 'static,
     D: DiskManager<K, V>,
 {
-    bid: usize,
     value: RwLockWriteGuard<'a, (bool, V)>,
-    pool: &'a BufferPool<K, V, D, S>,
-    pinned: bool,
+    pin: Option<BufferPin<'a, K, V, D, S>>,
 }
 
 impl<'a, K, V, D, const S: usize> BufferReadGuard<'a, K, V, D, S>
@@ -38,43 +35,25 @@ where
     V: Default + DeserializeOwned + Serialize + Send + Sync + 'static,
     D: DiskManager<K, V>,
 {
-    pub async fn new(bid: usize, pool: &'a BufferPool<K, V, D, S>) -> Self {
-        pool.pin(bid).await;
+    pub async fn new(pin: BufferPin<'a, K, V, D, S>) -> Self {
+        pin.pool.pin(pin.bid).await;
         Self {
-            bid,
-            value: pool.units[bid].value.read().await,
-            pool,
+            value: pin.pool.units[pin.bid].value.read().await,
+            pin: Some(pin),
         }
     }
 
-    pub async fn upgrade(self) -> BufferWriteGuard<'a, K, V, D, S> {
-        let bid = self.bid;
-        let pool = self.pool;
-        pool.pin(bid).await;
+    pub async fn upgrade(mut self) -> BufferWriteGuard<'a, K, V, D, S> {
+        let pin = self.pin.take().unwrap();
         drop(self);
 
-        let mut value = pool.units[bid].value.write().await;
+        let mut value = pin.pool.units[pin.bid].value.write().await;
         value.0 = true;
 
         BufferWriteGuard {
-            bid,
             value,
-            pool,
-            pinned: true,
+            pin: Some(pin),
         }
-    }
-}
-
-impl<'a, K, V, D, const S: usize> Drop for BufferReadGuard<'a, K, V, D, S>
-where
-    K: Default + Copy + Clone + Display + Hash + Eq + Send + Sync + 'static,
-    V: Default + DeserializeOwned + Serialize + Send + Sync + 'static,
-    D: DiskManager<K, V>,
-{
-    fn drop(&mut self) {
-        let pool = self.pool.clone();
-        let bid = self.bid;
-        tokio::spawn(async move { pool.unpin(bid).await });
     }
 }
 
@@ -97,49 +76,26 @@ where
     V: Default + DeserializeOwned + Serialize + Send + Sync + 'static,
     D: DiskManager<K, V>,
 {
-    pub async fn new(bid: usize, pool: &'a BufferPool<K, V, D, S>) -> Self {
-        pool.pin(bid).await;
-
-        let mut value = pool.units[bid].value.write().await;
+    pub(super) async fn new(pin: BufferPin<'a, K, V, D, S>) -> Self {
+        let mut value = pin.pool.units[pin.bid].value.write().await;
         value.0 = true;
 
         Self {
-            bid,
             value,
-            pool,
-            pinned: true,
+            pin: Some(pin),
         }
     }
 
-    pub async fn downgrade(self) -> BufferReadGuard<'a, K, V, D, S> {
-        let bid = self.bid;
-        let pool = self.pool;
-        pool.pin(bid).await;
+    pub async fn downgrade(mut self) -> BufferReadGuard<'a, K, V, D, S> {
+        let pin = self.pin.take().unwrap();
         drop(self);
 
-        let value = pool.units[bid].value.read().await;
-
-        BufferReadGuard { bid, value, pool }
+        BufferReadGuard::new(pin).await
     }
 
     pub async fn destroy(mut self) {
-        self.pool.release(self.bid).await;
-        self.pinned = false;
-    }
-}
-
-impl<'a, K, V, D, const S: usize> Drop for BufferWriteGuard<'a, K, V, D, S>
-where
-    K: Default + Copy + Clone + Display + Hash + Eq + Send + Sync + 'static,
-    V: Default + DeserializeOwned + Serialize + Send + Sync + 'static,
-    D: DiskManager<K, V>,
-{
-    fn drop(&mut self) {
-        if self.pinned {
-            let pool = self.pool.clone();
-            let bid = self.bid;
-            tokio::spawn(async move { pool.unpin(bid).await });
-        }
+        let pin = self.pin.take().unwrap();
+        pin.release().await;
     }
 }
 

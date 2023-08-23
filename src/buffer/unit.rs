@@ -45,7 +45,8 @@ where
         let mut key_guard = self.key.write().await;
         let mut value_guard = self.value.write().await;
         if value_guard.0 {
-            dm.write(&key_guard, &value_guard.1);
+            // dm.write(&key_guard, &value_guard.1).await;
+            dm.write(&key_guard, &value_guard.1).await;
         }
 
         // update
@@ -71,7 +72,7 @@ where
             let mut value_guard = self.value.write().await;
 
             if value_guard.0 {
-                dm.write(&key_guard, &value_guard.1);
+                dm.write(&key_guard, &value_guard.1).await;
                 value_guard.0 = false;
             }
         }

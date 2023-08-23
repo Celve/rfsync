@@ -1,5 +1,6 @@
 use std::{fmt::Display, marker::PhantomData, path::PathBuf};
 
+use async_trait::async_trait;
 use serde::{de::DeserializeOwned, Serialize};
 use tokio::fs::{self, File};
 
@@ -35,6 +36,7 @@ where
     }
 }
 
+#[async_trait]
 impl<K, V> DiskManager<K, V> for PrefixSerdeDiskManager<K, V>
 where
     K: Display + Send + Sync + 'static,

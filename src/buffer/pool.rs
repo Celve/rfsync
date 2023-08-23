@@ -8,6 +8,7 @@ use super::{
     alter::Alteration,
     disk::DiskManager,
     guard::{BufferReadGuard, BufferWriteGuard},
+    pin::BufferPin,
     unit::BufferUnit,
 };
 
@@ -58,7 +59,10 @@ where
         if let Some(bid) = bid {
             self.dm.create(key).await;
             *self.units[*bid].value.write().await = Default::default();
-            Ok(BufferWriteGuard::new(*bid, &self).await)
+
+            let pin = BufferPin::new(&self, *bid).await;
+            drop(map_guard);
+            Ok(BufferWriteGuard::new(pin).await)
         } else {
             drop(map_guard);
             let mut map_guard = self.map.write().await;
@@ -67,7 +71,9 @@ where
             if let Some(bid) = map_guard.get(key) {
                 self.dm.create(key).await;
                 *self.units[*bid].value.write().await = Default::default();
-                Ok(BufferWriteGuard::new(*bid, &self).await)
+
+                let pin = BufferPin::new(&self, *bid).await;
+                Ok(BufferWriteGuard::new(pin).await)
             } else {
                 // modify map
                 let bid = self.alter.lock().await.pop()?;
@@ -80,7 +86,9 @@ where
                 let unit = &self.units[bid];
                 unit.reset(*key, Default::default(), &self.dm).await;
 
-                Ok(BufferWriteGuard::new(bid, &self).await)
+                let pin = BufferPin::new(&self, bid).await;
+                drop(map_guard);
+                Ok(BufferWriteGuard::new(pin).await)
             }
         }
     }
@@ -89,14 +97,18 @@ where
         let map_guard = self.map.read().await;
         let bid = map_guard.get(key);
         if let Some(bid) = bid {
-            Ok(BufferReadGuard::new(*bid, &self).await)
+            let pin = BufferPin::new(&self, *bid).await;
+            drop(map_guard);
+            Ok(BufferReadGuard::new(pin).await)
         } else {
             drop(map_guard);
             let mut map_guard = self.map.write().await;
 
             // check twice
             if let Some(bid) = map_guard.get(key) {
-                Ok(BufferReadGuard::new(*bid, &self).await)
+                let pin = BufferPin::new(&self, *bid).await;
+                drop(map_guard);
+                Ok(BufferReadGuard::new(pin).await)
             } else {
                 // modify map
                 let bid = self.alter.lock().await.pop()?;
@@ -106,7 +118,9 @@ where
                 let unit = &self.units[bid];
                 unit.reset(*key, self.dm.read(key).await, &self.dm).await;
 
-                Ok(BufferReadGuard::new(bid, &self).await)
+                let pin = BufferPin::new(&self, bid).await;
+                drop(map_guard);
+                Ok(BufferReadGuard::new(pin).await)
             }
         }
     }
@@ -115,14 +129,18 @@ where
         let map_guard = self.map.read().await;
         let bid = map_guard.get(key);
         if let Some(bid) = bid {
-            Ok(BufferWriteGuard::new(*bid, &self).await)
+            let pin = BufferPin::new(&self, *bid).await;
+            drop(map_guard);
+            Ok(BufferWriteGuard::new(pin).await)
         } else {
             drop(map_guard);
             let mut map_guard = self.map.write().await;
 
             // check twice
             if let Some(bid) = map_guard.get(key) {
-                Ok(BufferWriteGuard::new(*bid, &self).await)
+                let pin = BufferPin::new(&self, *bid).await;
+                drop(map_guard);
+                Ok(BufferWriteGuard::new(pin).await)
             } else {
                 // modify map
                 let bid = self.alter.lock().await.pop()?;
@@ -132,7 +150,9 @@ where
                 let unit = &self.units[bid];
                 unit.reset(*key, self.dm.read(key).await, &self.dm).await;
 
-                Ok(BufferWriteGuard::new(bid, &self).await)
+                let pin = BufferPin::new(&self, bid).await;
+                drop(map_guard);
+                Ok(BufferWriteGuard::new(pin).await)
             }
         }
     }

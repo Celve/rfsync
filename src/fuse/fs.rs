@@ -1,4 +1,4 @@
-use std::{path::PathBuf, time::SystemTime};
+use std::{ops::Deref, path::PathBuf, sync::Arc, time::SystemTime};
 
 use fuser::FUSE_ROOT_ID;
 use libc::c_int;
@@ -10,10 +10,10 @@ use super::{
     consistent::Consistent,
     dir::{Dir, DirDiskManager, DirReadGuard, DirWriteGuard},
     file::{FileReadGuard, FileWriteGuard},
-    meta::{FileTy, Meta, MetaDiskManager, MetaReadGuard, MetaWriteGuard},
+    meta::{FileTy, Meta, MetaDiskManager, MetaReadGuard, MetaWriteGuard, FUSE_NONE_ID},
 };
 
-pub struct SyncFs<const S: usize> {
+pub struct SyncFsInner<const S: usize> {
     /// The path to store the intermediate files for fuse.
     path: PathBuf,
 
@@ -27,6 +27,10 @@ pub struct SyncFs<const S: usize> {
     dbp: BufferPool<u64, Dir, DirDiskManager, S>,
 
     fp: Subset<u64, S>,
+}
+
+pub struct SyncFs<const S: usize> {
+    inner: Arc<SyncFsInner<S>>,
 }
 
 impl<const S: usize> SyncFs<S> {
@@ -49,6 +53,7 @@ impl<const S: usize> SyncFs<S> {
             // it's promised that the sid and the ino of the root dir would both be `FUSE_ROOT_ID`
             meta.create(
                 FUSE_ROOT_ID,
+                FUSE_NONE_ID,
                 FUSE_ROOT_ID,
                 SystemTime::now(),
                 FileTy::Dir,
@@ -66,11 +71,13 @@ impl<const S: usize> SyncFs<S> {
         }
 
         Self {
-            path: path.clone(),
-            nino: Consistent::new(path.join("nino"), FUSE_ROOT_ID + 1).await,
-            mbp,
-            dbp,
-            fp: Subset::new(),
+            inner: Arc::new(SyncFsInner {
+                path: path.clone(),
+                nino: Consistent::new(path.join("nino"), FUSE_ROOT_ID + 1).await,
+                mbp,
+                dbp,
+                fp: Subset::new(),
+            }),
         }
     }
 
@@ -92,6 +99,15 @@ impl<const S: usize> SyncFs<S> {
 
     pub async fn write_dir(&self, ino: &u64) -> Result<DirWriteGuard<S>, c_int> {
         Ok(DirWriteGuard::new(self.dbp.write(ino).await?))
+    }
+
+    pub async fn create_dir(&self, ino: &u64) -> Result<DirWriteGuard<S>, c_int> {
+        Ok(DirWriteGuard::new(self.dbp.create(ino).await?))
+    }
+
+    pub async fn destroy_dir(&self, ino: &u64) -> Result<(), c_int> {
+        self.dbp.write(ino).await?.destroy().await;
+        Ok(())
     }
 
     pub async fn read_file(&self, ino: &u64) -> Result<FileReadGuard<S>, c_int> {
@@ -120,23 +136,24 @@ impl<const S: usize> SyncFs<S> {
         ))
     }
 
-    pub async fn create_dir(&self) -> Result<(u64, MetaWriteGuard<S>), c_int> {
-        let ino = self.alloc_ino().await;
-        self.dbp.create(&ino).await?;
-        Ok((ino, MetaWriteGuard::new(self.mbp.create(&ino).await?)))
+    pub async fn create_file(&self, ino: &u64) -> Result<FileWriteGuard<S>, c_int> {
+        let path = self.path.join("file").join(ino.to_string());
+        Ok(FileWriteGuard::new(
+            OpenOptions::new()
+                .create(true)
+                .write(true)
+                .truncate(true)
+                .open(&path)
+                .await
+                .map_err(|_| libc::EIO)?,
+            path,
+            self.fp.write(ino).await?,
+        ))
     }
 
-    pub async fn create_file(&self) -> Result<(u64, MetaWriteGuard<S>), c_int> {
-        let ino = self.alloc_ino().await;
-        OpenOptions::new()
-            .create(true)
-            .write(true)
-            .truncate(true)
-            .open(self.path.join("file").join(ino.to_string()))
-            .await
-            .map_err(|_| libc::EIO)?;
-
-        Ok((ino, MetaWriteGuard::new(self.mbp.create(&ino).await?)))
+    pub async fn destroy_file(&self, ino: &u64) -> Result<(), c_int> {
+        self.write_file(ino).await?.destroy().await;
+        Ok(())
     }
 
     pub async fn access_dir(
@@ -153,6 +170,19 @@ impl<const S: usize> SyncFs<S> {
         Ok((self.write_meta(ino).await?, self.write_dir(ino).await?))
     }
 
+    pub async fn make_dir(&self) -> Result<(u64, MetaWriteGuard<S>), c_int> {
+        let ino = self.alloc_ino().await;
+        self.dbp.create(&ino).await?;
+        Ok((ino, MetaWriteGuard::new(self.mbp.create(&ino).await?)))
+    }
+
+    pub async fn remove_dir(&self, ino: &u64) -> Result<(), c_int> {
+        let (meta, dir) = self.modify_dir(ino).await?;
+        meta.destroy().await;
+        dir.destroy().await;
+        Ok(())
+    }
+
     pub async fn access_file(
         &self,
         ino: &u64,
@@ -165,5 +195,41 @@ impl<const S: usize> SyncFs<S> {
         ino: &u64,
     ) -> Result<(MetaWriteGuard<S>, FileWriteGuard<S>), c_int> {
         Ok((self.write_meta(ino).await?, self.write_file(ino).await?))
+    }
+
+    pub async fn make_file(&self) -> Result<(u64, MetaWriteGuard<S>), c_int> {
+        let ino = self.alloc_ino().await;
+        OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open(self.path.join("file").join(ino.to_string()))
+            .await
+            .map_err(|_| libc::EIO)?;
+
+        Ok((ino, MetaWriteGuard::new(self.mbp.create(&ino).await?)))
+    }
+
+    pub async fn remove_file(&self, ino: &u64) -> Result<(), c_int> {
+        let (meta, file) = self.modify_file(ino).await?;
+        meta.destroy().await;
+        file.destroy().await;
+        Ok(())
+    }
+}
+
+impl<const S: usize> Deref for SyncFs<S> {
+    type Target = SyncFsInner<S>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.inner
+    }
+}
+
+impl<const S: usize> Clone for SyncFs<S> {
+    fn clone(&self) -> Self {
+        Self {
+            inner: self.inner.clone(),
+        }
     }
 }

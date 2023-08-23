@@ -5,17 +5,18 @@ use tokio::fs::{self, File};
 
 use crate::buffer::disk::DiskManager;
 
-pub struct PrefixDiskManager<K, V>
+#[derive(Clone)]
+pub struct PrefixSerdeDiskManager<K, V>
 where
     K: Display + Send + Sync,
     V: DeserializeOwned + Serialize + Send + Sync,
 {
     path: PathBuf,
-    _key: PhantomData<K>,
-    _value: PhantomData<V>,
+    key: PhantomData<K>,
+    value: PhantomData<V>,
 }
 
-impl<K, V> PrefixDiskManager<K, V>
+impl<K, V> PrefixSerdeDiskManager<K, V>
 where
     K: Display + Send + Sync,
     V: DeserializeOwned + Serialize + Send + Sync,
@@ -24,8 +25,8 @@ where
         fs::create_dir_all(&path).await.unwrap();
         Self {
             path,
-            _key: PhantomData,
-            _value: PhantomData,
+            key: PhantomData,
+            value: PhantomData,
         }
     }
 
@@ -34,7 +35,7 @@ where
     }
 }
 
-impl<K, V> DiskManager<K, V> for PrefixDiskManager<K, V>
+impl<K, V> DiskManager<K, V> for PrefixSerdeDiskManager<K, V>
 where
     K: Display + Send + Sync + 'static,
     V: DeserializeOwned + Serialize + Send + Sync + 'static,

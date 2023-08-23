@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::fuse::server::SyncServer;
 
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Peer {
     pub addr: SocketAddr,
     pub id: usize,

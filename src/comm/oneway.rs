@@ -30,11 +30,11 @@ pub enum Response {
 }
 
 #[derive(Clone, Copy, Deserialize, Serialize)]
-pub struct Client {
+pub struct Oneway {
     pub addr: SocketAddr,
 }
 
-impl Client {
+impl Oneway {
     pub fn new(addr: SocketAddr) -> Self {
         Self { addr }
     }
@@ -54,10 +54,16 @@ impl Client {
     }
 }
 
-impl Default for Client {
+impl Default for Oneway {
     fn default() -> Self {
         Self {
             addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 8080),
         }
+    }
+}
+
+impl From<Peer> for Oneway {
+    fn from(value: Peer) -> Self {
+        Self { addr: value.addr }
     }
 }

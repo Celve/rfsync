@@ -50,7 +50,7 @@ impl<'a, const S: usize> FileWriteGuard<'a, S> {
     }
 
     pub async fn destroy(self) {
-        info!("remove file {:?}", self.path);
+        info!("[fs] remove file {:?}", self.path);
         fs::remove_file(&self.path)
             .await
             .expect("try to remove non-existing file");

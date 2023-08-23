@@ -1,51 +1,55 @@
-use std::path::PathBuf;
+use std::{fmt::Debug, path::PathBuf};
 
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    comm::client::{Client, Request, Response},
+    comm::oneway::{Oneway, Request, Response},
     fuse::meta::FileTy,
 };
 
-use super::{sync::SyncCell, time::VecTime};
+use super::{
+    lean::LeanCelled,
+    sync::{SyncCell, SyncCelled},
+    time::VecTime,
+};
 
 #[derive(Deserialize, Serialize, Default)]
 pub struct RemoteCell {
     /// The path of the file, relative to the root sync dir.
-    pub(super) path: PathBuf,
+    pub(crate) path: PathBuf,
 
     /// The modification time vector.
-    pub(super) modif: VecTime,
+    pub(crate) modif: VecTime,
 
     /// The synchronization time vector.
-    pub(super) sync: VecTime,
+    pub(crate) sync: VecTime,
 
     /// The creationg time, which is the minimum value in the modification history.
-    pub(super) crt: usize,
+    pub(crate) crt: usize,
 
     /// Indicate the type.
-    pub(super) ty: FileTy,
+    pub(crate) ty: FileTy,
 
     /// Only use `PathBuf` because its children hasn't been fetched from remote.
-    pub(super) children: Vec<String>,
+    pub(crate) children: Vec<String>,
 
     /// The remote server.
     /// When `RemoteCell` is inited as `default`, the client would be the local host.
-    pub(super) cli: Client,
+    pub(crate) oneway: Oneway,
 }
 
 impl RemoteCell {
-    pub async fn from_cli(path: PathBuf, cli: Client) -> Option<Self> {
-        let res = cli.request(&Request::ReadCell(path)).await;
+    pub async fn from_ow(path: PathBuf, oneway: Oneway) -> Self {
+        let res = oneway.request(&Request::ReadCell(path)).await;
 
         if let Response::Cell(rc) = res {
-            Some(rc)
+            rc
         } else {
-            None
+            Default::default()
         }
     }
 
-    pub fn from_sc(sc: &SyncCell, cli: Client) -> Self {
+    pub fn from_sc(sc: &SyncCell, oneway: Oneway) -> Self {
         RemoteCell {
             path: sc.path.clone(),
             modif: sc.modif.clone(),
@@ -53,7 +57,60 @@ impl RemoteCell {
             crt: sc.crt.clone(),
             ty: sc.ty,
             children: sc.children.iter().map(|(name, _)| name.clone()).collect(),
-            cli,
+            oneway,
         }
+    }
+
+    pub fn empty(path: PathBuf) -> Self {
+        Self {
+            path,
+            ..Default::default()
+        }
+    }
+
+    pub async fn read(&self) -> Vec<u8> {
+        let res = self
+            .oneway
+            .request(&Request::ReadFile(self.path.clone()))
+            .await;
+        match res {
+            Response::File(bytes) => bytes,
+            _ => panic!("read file failed"),
+        }
+    }
+}
+
+impl LeanCelled for RemoteCell {
+    fn modif(&self) -> &VecTime {
+        &self.modif
+    }
+
+    fn sync(&self) -> &VecTime {
+        &self.sync
+    }
+
+    fn path(&self) -> &PathBuf {
+        &self.path
+    }
+}
+
+impl SyncCelled for RemoteCell {
+    fn crt(&self) -> usize {
+        self.crt
+    }
+
+    fn ty(&self) -> FileTy {
+        self.ty
+    }
+}
+
+impl Debug for RemoteCell {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RemoteCell")
+            .field("path", &self.path)
+            .field("modif", &self.modif)
+            .field("sync", &self.sync)
+            .field("ty", &self.ty)
+            .finish()
     }
 }

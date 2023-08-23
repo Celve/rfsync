@@ -58,26 +58,35 @@ impl VecTime {
 
 impl PartialOrd for VecTime {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        if self.map.len() != other.map.len() {
-            // not comparable because of different length
-            return None;
-        } else {
-            // less when element-wise less, greater when element-wise greater
-            let mut ordering = Ordering::Equal;
-            for (k, v) in self.map.iter() {
-                let other_v = other.map.get(k);
-                if let Some(other_v) = other_v {
-                    if ordering == Ordering::Equal {
-                        ordering = v.cmp(other_v);
-                    } else if ordering != v.cmp(other_v) {
-                        return None;
-                    }
-                } else {
+        // less when element-wise less, greater when element-wise greater
+        let keys = self
+            .map
+            .keys()
+            .chain(other.map.keys())
+            .cloned()
+            .collect::<Vec<_>>();
+
+        let mut ordering = Ordering::Equal;
+        for k in keys {
+            let self_v = self.map.get(&k);
+            let other_v = other.map.get(&k);
+            let res = match (self_v, other_v) {
+                (None, None) => Ordering::Equal,
+                (None, Some(_)) => Ordering::Less,
+                (Some(_), None) => Ordering::Greater,
+                (Some(self_v), Some(other_v)) => self_v.cmp(other_v),
+            };
+
+            if res != Ordering::Equal {
+                if ordering != Ordering::Equal && ordering != res {
                     return None;
+                } else {
+                    ordering = res;
                 }
             }
-            Some(ordering)
         }
+
+        Some(ordering)
     }
 }
 

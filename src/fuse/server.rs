@@ -1,45 +1,129 @@
 use std::{
+    collections::{HashMap, VecDeque},
+    ffi::OsStr,
     io::SeekFrom,
     net::SocketAddr,
     path::PathBuf,
-    sync::atomic::{AtomicU64, Ordering},
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc,
+    },
     time::SystemTime,
 };
 
+use async_recursion::async_recursion;
+use fuser::FUSE_ROOT_ID;
 use libc::c_int;
-use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
+use tokio::{
+    io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt},
+    sync::{
+        mpsc::{self, Sender},
+        RwLock,
+    },
+};
+use tracing::info;
 
-use crate::{cell::tree::SyncTree, comm::client::Client, fuse::meta::FileTy};
+use crate::{
+    cell::{
+        copy::{CopyCell, SyncOp},
+        remote::RemoteCell,
+        stge::CopyStge,
+        sync::SyncCellWriteGuard,
+        tree::SyncTree,
+    },
+    comm::{
+        oneway::{Oneway, Request, Response},
+        peer::Peer,
+    },
+    fuse::meta::FileTy,
+};
 
-use super::{fs::SyncFs, meta::Meta};
+use super::{
+    dir::{DirReadGuard, DirWriteGuard},
+    file::{FileReadGuard, FileWriteGuard},
+    fs::SyncFs,
+    meta::{Meta, MetaWriteGuard},
+};
 
 pub struct SyncServer<const S: usize> {
-    fs: SyncFs<S>,
-    tree: SyncTree<S>,
-    nfh: AtomicU64,
-    client: Client,
+    pub(crate) fs: SyncFs<S>,
+    pub(crate) tree: SyncTree<S>,
+    pub(crate) stge: CopyStge,
+    pub(crate) nfh: Arc<AtomicU64>,
+    pub(crate) me: Peer,
+    pub(crate) peers: Arc<RwLock<Vec<Peer>>>,
 }
 
 impl<const S: usize> SyncServer<S> {
-    pub async fn new(mid: usize, path: PathBuf, is_direct: bool, addr: SocketAddr) -> Self {
+    pub async fn new(me: Peer, path: PathBuf, is_direct: bool, peers: Vec<Peer>) -> Self {
         let fs = SyncFs::new(path.clone(), is_direct).await;
-        let tree = SyncTree::new(mid, path, is_direct).await;
-        let client = Client::new(addr);
+        let tree = SyncTree::new(me.id, path.clone(), is_direct).await;
+        let stge = CopyStge::new(path).await;
 
         Self {
             fs,
             tree,
-            nfh: AtomicU64::new(1),
-            client,
+            stge,
+            nfh: Arc::new(AtomicU64::new(1)),
+            me,
+            peers: Arc::new(RwLock::new(peers)),
         }
     }
 
     pub fn mid(&self) -> usize {
-        self.tree.mid
+        self.me.id
     }
 
     pub fn addr(&self) -> SocketAddr {
-        self.client.addr
+        self.me.addr
+    }
+
+    fn osstr2str(osstr: &OsStr) -> &str {
+        osstr.to_str().unwrap()
+    }
+
+    pub async fn sendaway(&self, peer: &Peer, path: &PathBuf) {
+        loop {
+            let res = Oneway::from(*peer)
+                .request(&Request::SyncCell(self.me, path.clone()))
+                .await;
+            if let Response::Sync = res {
+                break;
+            }
+        }
+    }
+
+    pub async fn join(&self, peer: Peer) {
+        self.peers.write().await.push(peer.clone());
+        let srv = self.clone();
+        tokio::spawn(async move { srv.sendaway(&peer, &PathBuf::new()).await });
+    }
+
+    pub async fn leave(&self, target: &Peer) {
+        let mut peers = self.peers.write().await;
+        if let Some(i) = peers.iter().position(|peer| peer == target) {
+            peers.remove(i);
+        }
+    }
+
+    /// The broadcast is divided into two steps:
+    /// - Broadcast it to its ancestors.
+    /// - Broadcast it to server's peers.
+    pub async fn broadcast(&self, sc: SyncCellWriteGuard<'_, S>) {
+        info!("[modif] {:?} is modified to {:?}", sc.path, sc.modif);
+        let path = sc.path.clone();
+        let sid = sc.sid;
+        drop(sc);
+        let tree = self.tree.clone();
+        tokio::spawn(async move { tree.sendup(&sid).await });
+
+        let peers = self.peers.read().await;
+        for peer in peers.iter() {
+            let srv = self.clone();
+            let peer = peer.clone();
+            let path = path.clone();
+            tokio::spawn(async move { srv.sendaway(&peer, &path).await });
+        }
     }
 
     pub async fn mknod(
@@ -54,14 +138,18 @@ impl<const S: usize> SyncServer<S> {
         let now = SystemTime::now();
 
         if !pdir.contains_key(name) {
-            let psc = self.tree.read(&pmeta.sid).await?;
+            let mut psc = self.tree.write_by_id(&pmeta.sid).await?;
 
             // modify children
-            let (ino, mut meta) = self.fs.create_file().await?;
-            let (sid, mut sc) = self.tree.create().await?;
-            meta.create(ino, sid, now, FileTy::File, perm, uid, gid);
-            sc.create(sid, psc.path.join(name), FileTy::File);
-            sc.modify(self.tree.mid, self.tree.forward().await, FileTy::Dir);
+            let (ino, mut meta) = self.fs.make_file().await?;
+            let (sid, mut sc) = self
+                .tree
+                .create4parent(&mut psc, name, FileTy::File)
+                .await?;
+            drop(psc);
+            meta.create(ino, *parent, sid, now, FileTy::File, perm, uid, gid);
+            sc.modify(self.tree.mid, self.tree.forward().await, FileTy::File);
+            self.broadcast(sc).await;
 
             // modify parent
             pmeta.modify(now);
@@ -86,17 +174,18 @@ impl<const S: usize> SyncServer<S> {
         let now = SystemTime::now();
 
         if !pdir.contains_key(name) {
-            let psc = self.tree.read(parent).await?;
+            let mut psc = self.tree.write_by_id(&pmeta.sid).await?;
 
             // modify children
-            let (ino, mut meta) = self.fs.create_dir().await?;
+            let (ino, mut meta) = self.fs.make_dir().await?;
             let mut dir = self.fs.write_dir(&ino).await?;
-            let (sid, mut sc) = self.tree.create().await?;
-            meta.create(ino, sid, now, FileTy::Dir, perm, uid, gid);
+            let (sid, mut sc) = self.tree.create4parent(&mut psc, name, FileTy::Dir).await?;
+            drop(psc);
+            meta.create(ino, *parent, sid, now, FileTy::Dir, perm, uid, gid);
             dir.insert(".".to_string(), ino, FileTy::File);
             dir.insert("..".to_string(), *parent, FileTy::File);
-            sc.create(sid, psc.path.join(name), FileTy::File);
             sc.modify(self.tree.mid, self.tree.forward().await, FileTy::Dir);
+            self.broadcast(sc).await;
 
             // modify parent
             pmeta.modify(now);
@@ -117,8 +206,9 @@ impl<const S: usize> SyncServer<S> {
         if let Some((ino, _)) = pdir.remove(name) {
             // modify children
             let (mut meta, file) = self.fs.modify_file(&ino).await?;
-            let mut sc = self.tree.write(&meta.sid).await?;
+            let mut sc = self.tree.write_by_id(&meta.sid).await?;
             sc.modify(self.tree.mid, self.tree.forward().await, FileTy::None);
+            self.broadcast(sc).await;
             if meta.unlink() {
                 meta.destroy().await;
                 file.destroy().await;
@@ -143,8 +233,9 @@ impl<const S: usize> SyncServer<S> {
             let (mut meta, dir) = self.fs.modify_dir(&ino).await?;
 
             if dir.len() == 0 {
-                let mut sc = self.tree.write(&meta.sid).await?;
+                let mut sc = self.tree.write_by_id(&meta.sid).await?;
                 sc.modify(self.tree.mid, self.tree.forward().await, FileTy::None);
+                self.broadcast(sc).await;
                 if meta.unlink() {
                     meta.destroy().await;
                     dir.destroy().await;
@@ -197,7 +288,7 @@ impl<const S: usize> SyncServer<S> {
 
     pub async fn write(&self, ino: &u64, offset: &i64, bytes: &[u8]) -> Result<usize, c_int> {
         let (mut meta, mut file) = self.fs.modify_file(ino).await?;
-        let mut sc = self.tree.write(&meta.sid).await?;
+        let mut sc = self.tree.write_by_id(&meta.sid).await?;
         let now = SystemTime::now();
 
         // read from disk
@@ -212,6 +303,7 @@ impl<const S: usize> SyncServer<S> {
 
         // modify sync cell
         sc.modify(self.mid(), self.tree.forward().await, FileTy::File);
+        self.broadcast(sc).await;
 
         Ok(len)
     }
@@ -245,11 +337,17 @@ impl<const S: usize> SyncServer<S> {
 
         if let Some(size) = size {
             // modify inode
-            meta.size = size;
+            if size != meta.size {
+                meta.size = size;
 
-            // modify file
-            let file = self.fs.write_file(&ino).await?;
-            file.set_len(size).await.map_err(|_| libc::EIO)?;
+                // modify file
+                let file = self.fs.write_file(&ino).await?;
+                file.set_len(size).await.map_err(|_| libc::EIO)?;
+
+                let mut sc = self.tree.write_by_id(&meta.sid).await?;
+                sc.modify(self.mid(), self.tree.forward().await, FileTy::File);
+                self.broadcast(sc).await;
+            }
         }
 
         if let Some(atime) = atime {
@@ -292,5 +390,286 @@ impl<const S: usize> SyncServer<S> {
             .enumerate()
             .map(|(i, (str, (ino, ty)))| (*ino, offset + i as i64 + 1, ty.clone(), str.clone()))
             .collect())
+    }
+}
+
+impl<const S: usize> SyncServer<S> {
+    /// Return whether the synchronization is done.
+    pub async fn sync(&self, ino: u64, rc: RemoteCell) -> Result<(), c_int> {
+        let sid = {
+            let meta = self.fs.read_meta(&ino).await?;
+            meta.sid
+        };
+
+        let cc = CopyCell::make(sid, rc, self.tree.clone(), self.stge.clone()).await?;
+        let (tx, _rx) = mpsc::channel(1);
+        let _ = self.copy(ino, cc, tx).await;
+        self.tree.sendup(&sid).await;
+
+        Ok(())
+    }
+
+    #[async_recursion]
+    pub async fn copy(&self, ino: u64, cc: CopyCell, tx: Sender<()>) -> Result<(), c_int> {
+        let meta = self.fs.write_meta(&ino).await;
+        tx.send(()).await.unwrap();
+        drop(tx);
+
+        let mut meta = meta?;
+        let sid = meta.sid;
+        let mut sc = self.tree.write_by_id(&sid).await?;
+        let sop = sc.calc_sync_op(&cc);
+
+        if sop == cc.sop {
+            match sop {
+                SyncOp::None => {
+                    info!("[sync] do nothing for {:?} {:?}", cc.path, cc.modif);
+                    sc.merge(&cc);
+                    Ok(())
+                }
+
+                SyncOp::Copy => {
+                    info!("[sync] copy {:?} all", cc.path);
+                    if sc.ty == FileTy::Dir {
+                        // the file should be deleted, and the parent should be locked
+                        // drop first to confirm to the lock mechanism
+                        let pino = meta.parent;
+                        drop(meta);
+                        drop(sc);
+
+                        let (mut pmeta, mut pdir) = self.fs.modify_dir(&pino).await?;
+                        let now = SystemTime::now();
+                        let (metas, scs, dirs, files) = self.write_whole_dir(&ino).await?;
+                        if scs.values().all(|sc| sc.calc_sync_op(&cc) == SyncOp::Copy) {
+                            pmeta.modify(now);
+
+                            let name = Self::osstr2str(cc.path.file_name().unwrap());
+                            if cc.ty == FileTy::None {
+                                pdir.remove(name);
+                            } else {
+                                let (ino, mut meta) = self.fs.make_file().await?;
+                                meta.create(
+                                    ino, ino, cc.sid, now, cc.ty, pmeta.perm, pmeta.uid, pmeta.gid,
+                                );
+                                pdir.insert(name.to_string(), ino, cc.ty);
+                            }
+
+                            for meta in metas.into_values() {
+                                meta.destroy().await;
+                            }
+
+                            for mut sc in scs.into_values() {
+                                sc.substituted(&cc);
+                            }
+
+                            for dir in dirs.into_values() {
+                                dir.destroy().await;
+                            }
+
+                            for file in files.into_values() {
+                                file.destroy().await;
+                            }
+
+                            Ok(())
+                        } else {
+                            self.sync(ino, RemoteCell::from_ow(cc.path, cc.oneway).await)
+                                .await
+                        }
+                    } else if cc.ty == FileTy::File {
+                        sc.substituted(&cc);
+                        let mut file = self.fs.write_file(&ino).await?;
+                        let bytes = cc.read().await;
+                        file.write(&bytes).await.map_err(|_| libc::EIO)?;
+
+                        meta.modify(SystemTime::now());
+                        meta.size = bytes.len() as u64;
+
+                        Ok(())
+                    } else {
+                        sc.substituted(&cc);
+                        self.fs.remove_file(&ino).await?;
+                        meta.destroy().await;
+
+                        Ok(())
+                    }
+                }
+
+                SyncOp::Conflict => {
+                    info!("[sync] find {:?} conflict", cc.path);
+                    sc.merge(&cc);
+                    todo!("place the conflict file in the conflict directory")
+                }
+
+                SyncOp::Recurse => {
+                    info!("[sync] recurse {:?} down", cc.path);
+                    sc.substituted(&cc);
+
+                    // convert file to dir if necessary
+                    let mut dir = if meta.ty == FileTy::File {
+                        meta.set_ty(FileTy::Dir);
+                        self.fs.destroy_file(&ino).await?;
+                        self.fs.create_dir(&ino).await?
+                    } else {
+                        self.fs.write_dir(&ino).await?
+                    };
+
+                    let now = SystemTime::now();
+                    let mut cnt = cc.children.len();
+                    if cnt > 0 {
+                        let (tx, mut rx) = mpsc::channel(cnt);
+                        for (name, cc) in cc.children {
+                            let cino = if let Ok((cino, _)) = dir.get(&name) {
+                                *cino
+                            } else {
+                                let (cino, mut cmeta) = if cc.ty == FileTy::File {
+                                    self.fs.make_file().await?
+                                } else {
+                                    self.fs.make_dir().await?
+                                };
+                                cmeta.create(
+                                    cino, ino, cc.sid, now, cc.ty, meta.perm, meta.uid, meta.gid,
+                                );
+                                dir.insert(name, cino, cc.ty);
+                                cino
+                            };
+                            let srv = self.clone();
+                            let tx = tx.clone();
+                            tokio::spawn(async move { srv.copy(cino, cc, tx).await });
+                        }
+
+                        while let Some(_) = rx.recv().await {
+                            cnt -= 1;
+                            if cnt == 0 {
+                                break;
+                            }
+                        }
+                    }
+
+                    Ok(())
+                }
+            }
+        } else {
+            drop(meta);
+            drop(sc);
+            self.sync(ino, RemoteCell::from_ow(cc.path, cc.oneway).await)
+                .await
+        }
+    }
+}
+
+impl<const S: usize> SyncServer<S> {
+    pub async fn write_whole_dir(
+        &self,
+        ino: &u64,
+    ) -> Result<
+        (
+            HashMap<u64, MetaWriteGuard<S>>,
+            HashMap<u64, SyncCellWriteGuard<S>>,
+            HashMap<u64, DirWriteGuard<S>>,
+            HashMap<u64, FileWriteGuard<S>>,
+        ),
+        c_int,
+    > {
+        let mut metas = HashMap::new();
+        let mut scs = HashMap::new();
+        let mut dirs = HashMap::new();
+        let mut files = HashMap::new();
+
+        let mut queue = VecDeque::new();
+        queue.push_back(*ino);
+
+        while let Some(ino) = queue.pop_front() {
+            let meta = self.fs.write_meta(&ino).await?;
+            if meta.ty == FileTy::File {
+                files.insert(ino, self.fs.write_file(&ino).await?);
+            } else if meta.ty == FileTy::Dir {
+                let dir = self.fs.write_dir(&ino).await?;
+                for (_, (ino, _)) in dir.iter() {
+                    queue.push_back(*ino);
+                }
+                dirs.insert(ino, dir);
+            } else {
+                panic!("file type is none");
+            }
+
+            let sc = self.tree.write_by_id(&meta.sid).await?;
+            scs.insert(ino, sc);
+
+            metas.insert(ino, meta);
+        }
+
+        Ok((metas, scs, dirs, files))
+    }
+
+    pub async fn read_dir_by_path(&self, path: &PathBuf) -> Result<DirReadGuard<S>, c_int> {
+        let names: Vec<_> = path.components().collect();
+        let mut dir = self.fs.read_dir(&FUSE_ROOT_ID).await?;
+        for name in names {
+            let name = Self::osstr2str(name.as_os_str());
+            dir = self.fs.read_dir(&dir.get(name)?.0).await?;
+        }
+
+        Ok(dir)
+    }
+
+    pub async fn get_ino_by_path(&self, path: &PathBuf) -> Result<u64, c_int> {
+        let mut parent_path = path.clone();
+        parent_path.pop();
+        let dir = self.read_dir_by_path(&parent_path).await?;
+        let name = Self::osstr2str(path.file_name().unwrap());
+        Ok(dir.get(name)?.0)
+    }
+
+    pub async fn get_existing_ino_by_path(&self, path: &PathBuf) -> (u64, PathBuf) {
+        let ext = path.file_name().map(|name| Self::osstr2str(name));
+        let mut parent_path = path.clone();
+        parent_path.pop();
+        let names: Vec<_> = parent_path.components().collect();
+        let mut ino = FUSE_ROOT_ID;
+        let mut real_path = PathBuf::new();
+        for name in names {
+            let dir = if let Ok(dir) = self.fs.read_dir(&ino).await {
+                dir
+            } else {
+                return (ino, real_path);
+            };
+
+            let name = Self::osstr2str(name.as_os_str());
+            ino = if let Ok(ino) = dir.get(name) {
+                ino.0
+            } else {
+                return (ino, real_path);
+            };
+            real_path.push(name);
+        }
+
+        if let Some(ext) = ext {
+            if let Ok(dir) = self.fs.read_dir(&ino).await {
+                if let Ok((cino, _)) = dir.get(ext) {
+                    ino = *cino;
+                    real_path.push(ext);
+                }
+            }
+        }
+
+        (ino, real_path)
+    }
+
+    pub async fn read_file_by_path(&self, path: &PathBuf) -> Result<FileReadGuard<S>, c_int> {
+        let ino = self.get_ino_by_path(path).await?;
+        self.fs.read_file(&ino).await
+    }
+}
+
+impl<const S: usize> Clone for SyncServer<S> {
+    fn clone(&self) -> Self {
+        Self {
+            fs: self.fs.clone(),
+            tree: self.tree.clone(),
+            stge: self.stge.clone(),
+            nfh: self.nfh.clone(),
+            me: self.me.clone(),
+            peers: self.peers.clone(),
+        }
     }
 }

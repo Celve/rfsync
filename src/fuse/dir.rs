@@ -6,14 +6,17 @@ use std::{
 use libc::c_int;
 use serde::{Deserialize, Serialize};
 
-use crate::buffer::guard::{BufferReadGuard, BufferWriteGuard};
+use crate::{
+    buffer::guard::{BufferReadGuard, BufferWriteGuard},
+    disk::serde::PrefixSerdeDiskManager,
+};
 
-use super::{disk::PrefixDiskManager, meta::FileTy};
+use super::meta::FileTy;
 
 #[derive(Deserialize, Serialize, Default)]
 pub struct Dir(BTreeMap<String, (u64, FileTy)>);
 
-pub type DirDiskManager = PrefixDiskManager<u64, Dir>;
+pub type DirDiskManager = PrefixSerdeDiskManager<u64, Dir>;
 
 pub struct DirReadGuard<'a, const S: usize>(BufferReadGuard<'a, u64, Dir, DirDiskManager, S>);
 

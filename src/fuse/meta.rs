@@ -1,4 +1,5 @@
 use std::{
+    fmt::Display,
     ops::{Deref, DerefMut},
     time::SystemTime,
 };
@@ -6,13 +7,17 @@ use std::{
 use fuser::{FileAttr, FileType};
 use serde::{Deserialize, Serialize};
 
-use crate::buffer::guard::{BufferReadGuard, BufferWriteGuard};
-
-use super::disk::PrefixDiskManager;
+use crate::{
+    buffer::guard::{BufferReadGuard, BufferWriteGuard},
+    cell::sync::SyncCelled,
+    disk::serde::PrefixSerdeDiskManager,
+};
 
 pub const PAGE_SIZE: usize = 4096;
 
-#[derive(Deserialize, Serialize, Clone, Copy, PartialEq, Eq, Default)]
+pub const FUSE_NONE_ID: u64 = 0;
+
+#[derive(Deserialize, Serialize, Clone, Copy, PartialEq, Eq, Default, Debug)]
 pub enum FileTy {
     #[default]
     None,
@@ -24,6 +29,7 @@ pub enum FileTy {
 #[derive(Deserialize, Serialize, Clone)]
 pub struct Meta {
     pub ino: u64,
+    pub parent: u64,
     pub sid: u64,
     pub size: u64,
 
@@ -46,7 +52,7 @@ pub struct Meta {
     pub fhc: usize,
 }
 
-pub type MetaDiskManager = PrefixDiskManager<u64, Meta>;
+pub type MetaDiskManager = PrefixSerdeDiskManager<u64, Meta>;
 
 pub struct MetaReadGuard<'a, const S: usize>(BufferReadGuard<'a, u64, Meta, MetaDiskManager, S>);
 
@@ -62,10 +68,25 @@ impl Into<FileType> for FileTy {
     }
 }
 
+impl Display for FileTy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{}",
+            match self {
+                FileTy::None => "None",
+                FileTy::File => "File",
+                FileTy::Dir => "Dir",
+            }
+        )
+    }
+}
+
 impl Meta {
     pub fn create(
         &mut self,
         ino: u64,
+        parent: u64,
         sid: u64,
         time: SystemTime,
         ty: FileTy,
@@ -74,16 +95,31 @@ impl Meta {
         gid: u32,
     ) {
         self.ino = ino;
+        self.parent = parent;
         self.sid = sid;
         self.atime = time;
         self.mtime = time;
         self.ctime = time;
         self.crtime = time;
-        self.ty = ty;
+        self.set_ty(ty);
         self.perm = perm;
         self.nlink = 1;
         self.uid = uid;
         self.gid = gid;
+    }
+
+    pub fn set_ty(&mut self, ty: FileTy) {
+        self.ty = ty;
+        match ty {
+            FileTy::Dir => self.size = PAGE_SIZE as u64,
+            _ => self.size = 0,
+        }
+    }
+
+    pub fn reinit(&mut self, cell: &impl SyncCelled, time: SystemTime) {
+        self.modify(time);
+        self.change(time);
+        self.set_ty(cell.ty());
     }
 
     pub fn modify(&mut self, time: SystemTime) {
@@ -101,12 +137,7 @@ impl Meta {
 
     /// Return whether the file should be eliminate.
     pub fn unlink(&mut self) -> bool {
-        self.nlink -= 1;
-
-        if self.nlink == 0 {
-            self.ty = FileTy::None;
-        }
-
+        self.ty = FileTy::None;
         self.nlink == 0 && self.fhc == 0
     }
 
@@ -125,6 +156,7 @@ impl Default for Meta {
     fn default() -> Self {
         Self {
             ino: Default::default(),
+            parent: Default::default(),
             sid: Default::default(),
             size: Default::default(),
             atime: SystemTime::UNIX_EPOCH,

@@ -21,6 +21,9 @@ where
         let data = if let Ok(bytes) = fs::read(&path).await {
             bincode::deserialize(&bytes).expect("fail to deserialize consistent file")
         } else {
+            fs::write(&path, bincode::serialize(&default).unwrap())
+                .await
+                .unwrap();
             default
         };
 

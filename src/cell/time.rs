@@ -1,7 +1,4 @@
-use std::{
-    cmp::{max, min, Ordering},
-    collections::HashMap,
-};
+use std::{cmp::Ordering, collections::HashMap};
 
 use serde::{Deserialize, Serialize};
 
@@ -20,7 +17,7 @@ impl VecTime {
     }
 
     /// Extend another `VecTime` with this one, applying the conflict value with filter.
-    fn extend(&mut self, other: &Self, filter: impl Fn(usize, usize) -> usize) {
+    pub fn union(&mut self, other: &Self, filter: impl Fn(usize, usize) -> usize) {
         // self.mappings.extend(other.mappings.iter());
         for (k, v) in other.map.iter() {
             let old_v = self.map.get(k);
@@ -32,14 +29,12 @@ impl VecTime {
         }
     }
 
-    /// Merge another `VecTime` with this one, retaining the maximum value when conflicts.
-    pub fn merge_max(&mut self, other: &Self) {
-        self.extend(other, max);
-    }
-
-    /// Merge another `VecTime` with this one, retaining the minimum value when conflicts.
-    pub fn merge_min(&mut self, other: &Self) {
-        self.extend(other, min);
+    pub fn intersect(&mut self, other: &Self, filter: impl Fn(usize, usize) -> usize) {
+        self.map = self
+            .map
+            .iter()
+            .filter_map(|(k, v1)| other.map.get(k).map(|v2| (*k, filter(*v1, *v2))))
+            .collect();
     }
 
     // Insert a new mapping to the map.

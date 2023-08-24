@@ -29,10 +29,10 @@ fn main() {
     let cli = Cli::parse();
     let id = cli.id;
 
-    env_logger::builder()
-        .format_timestamp_nanos()
-        .filter_level(LevelFilter::Debug)
-        .init();
+    // env_logger::builder()
+    //     .format_timestamp_nanos()
+    //     .filter_level(LevelFilter::Debug)
+    //     .init();
 
     let subscriber = tracing_subscriber::fmt()
         .compact()

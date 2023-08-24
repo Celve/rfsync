@@ -1,4 +1,10 @@
-use std::{ffi::OsStr, ops::Deref, path::PathBuf, sync::Arc};
+use std::{
+    cmp::{max, min},
+    ffi::OsStr,
+    ops::Deref,
+    path::PathBuf,
+    sync::Arc,
+};
 
 use fuser::FUSE_ROOT_ID;
 use libc::c_int;
@@ -36,7 +42,7 @@ impl<const S: usize> SyncTree<S> {
                 .create(&FUSE_ROOT_ID)
                 .await
                 .expect("fail to create root sc");
-            sc.create(FUSE_ROOT_ID, FUSE_NONE_ID, PathBuf::new(), FileTy::Dir);
+            sc.empty(FUSE_ROOT_ID, FUSE_NONE_ID, PathBuf::new(), FileTy::Dir);
         }
 
         Self(Arc::new(SyncTreeInner {
@@ -59,7 +65,6 @@ impl<const S: usize> SyncTree<S> {
         &self,
         parent: &mut SyncCell,
         name: &str,
-        ty: FileTy,
     ) -> Result<(u64, SyncCellWriteGuard<S>), c_int> {
         Ok(if let Some(sid) = parent.children.get(name) {
             (
@@ -70,7 +75,7 @@ impl<const S: usize> SyncTree<S> {
             let sid = self.alloc_sid().await;
             parent.children.insert(name.to_string(), sid);
             let mut guard = SyncCellWriteGuard::new(self.bp.create(&sid).await?, self.clone());
-            guard.create(sid, parent.sid, parent.path.join(name), ty);
+            guard.create(sid, parent.sid, parent.path.join(name), parent.sync.clone());
             (sid, guard)
         })
     }
@@ -152,8 +157,8 @@ impl<const S: usize> SyncTree<S> {
                     .read_by_id(&sid)
                     .await
                     .expect("fail to get the sync cell along the path");
-                psc.modif.merge_max(&sc.modif);
-                psc.sync.merge_min(&sc.sync);
+                psc.modif.union(&sc.modif, max);
+                psc.sync.intersect(&sc.sync, min);
             }
             psid = psc.parent;
         }

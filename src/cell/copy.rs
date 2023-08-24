@@ -119,7 +119,7 @@ impl CopyCell {
         let mut sc = tree.write_by_id(&sid).await?;
         for name in rc.children.iter() {
             if !sc.children.contains_key(name) {
-                tree.create4parent(&mut sc, name, FileTy::None).await?;
+                tree.create4parent(&mut sc, name).await?;
             }
         }
 

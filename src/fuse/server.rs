@@ -146,10 +146,7 @@ impl<const S: usize> SyncServer<S> {
 
             // modify sync cell
             let sid = if !name.ends_with(".nosync") {
-                let (sid, mut sc) = self
-                    .tree
-                    .create4parent(&mut psc, name, FileTy::File)
-                    .await?;
+                let (sid, mut sc) = self.tree.create4parent(&mut psc, name).await?;
                 drop(psc);
                 sc.modify(self.tree.mid, self.tree.forward().await, FileTy::File);
                 self.broadcast(sc).await;
@@ -191,7 +188,7 @@ impl<const S: usize> SyncServer<S> {
             let mut dir = self.fs.write_dir(&ino).await?;
 
             let sid = if !name.ends_with(".nosync") {
-                let (sid, mut sc) = self.tree.create4parent(&mut psc, name, FileTy::Dir).await?;
+                let (sid, mut sc) = self.tree.create4parent(&mut psc, name).await?;
                 drop(psc);
                 sc.modify(self.tree.mid, self.tree.forward().await, FileTy::Dir);
                 self.broadcast(sc).await;
@@ -349,10 +346,6 @@ impl<const S: usize> SyncServer<S> {
     pub async fn getattr(&self, ino: &u64) -> Result<Meta, c_int> {
         let mut meta = self.fs.write_meta(ino).await?;
         meta.access(SystemTime::now());
-
-        let sc = self.tree.write_by_id(&meta.sid).await?;
-        println!("[watch] sc: {}", sc.deref());
-
         Ok(meta.clone())
     }
 
@@ -583,6 +576,12 @@ impl<const S: usize> SyncServer<S> {
 
         let meta = meta?;
         let sc = self.tree.write_by_id(&meta.sid).await?;
+        info!(
+            "[sync] resolve conflict for {:?} due to {} and {}",
+            cc.path,
+            sc.deref(),
+            cc
+        );
         if sc.calc_sync_op(&cc) == cc.sop {
             let pino = meta.parent;
             drop(meta);

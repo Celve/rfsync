@@ -1,4 +1,5 @@
 use std::{
+    cmp::max,
     collections::HashMap,
     fmt::Display,
     ops::{Deref, DerefMut},
@@ -62,7 +63,15 @@ pub struct SyncCellWriteGuard<'a, const S: usize> {
 }
 
 impl SyncCell {
-    pub fn create(&mut self, sid: u64, parent: u64, path: PathBuf, ty: FileTy) {
+    /// Give `sync` beforehand to support inheritance.
+    pub fn create(&mut self, sid: u64, parent: u64, path: PathBuf, sync: VecTime) {
+        self.sid = sid;
+        self.parent = parent;
+        self.path = path;
+        self.sync = sync;
+    }
+
+    pub fn empty(&mut self, sid: u64, parent: u64, path: PathBuf, ty: FileTy) {
         self.sid = sid;
         self.parent = parent;
         self.path = path;
@@ -86,13 +95,9 @@ impl SyncCell {
         }
     }
 
-    pub fn update(&mut self, mid: usize, time: usize) {
-        self.sync.insert(mid, time);
-    }
-
     pub fn merge(&mut self, other: &impl SyncCelled) {
         self.modif = other.modif().clone();
-        self.sync.merge_max(other.sync());
+        self.sync.union(other.sync(), max);
     }
 
     pub fn substituted(&mut self, other: &impl SyncCelled) {

@@ -9,22 +9,24 @@ use tokio::{
     net::TcpStream,
 };
 
-use crate::cell::remote::RemoteCell;
+use crate::{
+    cell::remote::RemoteCell,
+    rsync::{hashed::HashedList, inst::InstList},
+};
 
 use super::peer::Peer;
 
 #[derive(Deserialize, Serialize, Debug)]
 pub enum Request {
     ReadCell(PathBuf),
-    ReadFile(PathBuf),
+    ReadFile(PathBuf, HashedList),
     SyncCell(Peer, PathBuf),
 }
 
 #[derive(Deserialize, Serialize)]
 pub enum Response {
     Cell(RemoteCell),
-    #[serde(with = "serde_bytes")]
-    File(Vec<u8>),
+    File(InstList),
     Sync,
     Err(String),
 }

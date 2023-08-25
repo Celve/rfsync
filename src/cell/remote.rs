@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use crate::{
     comm::oneway::{Oneway, Request, Response},
     fuse::meta::FileTy,
+    rsync::{hashed::HashedList, inst::InstList},
 };
 
 use super::{
@@ -33,6 +34,8 @@ pub struct RemoteCell {
     /// Only use `PathBuf` because its children hasn't been fetched from remote.
     pub(crate) children: Vec<String>,
 
+    pub(crate) list: HashedList,
+
     /// The remote server.
     /// When `RemoteCell` is inited as `default`, the client would be the local host.
     pub(crate) oneway: Oneway,
@@ -57,6 +60,7 @@ impl RemoteCell {
             crt: sc.crt.clone(),
             ty: sc.ty,
             children: sc.children.iter().map(|(name, _)| name.clone()).collect(),
+            list: sc.list.clone(),
             oneway,
         }
     }
@@ -68,13 +72,13 @@ impl RemoteCell {
         }
     }
 
-    pub async fn read(&self) -> Vec<u8> {
+    pub async fn read(&self, hashed_list: HashedList) -> InstList {
         let res = self
             .oneway
-            .request(&Request::ReadFile(self.path.clone()))
+            .request(&Request::ReadFile(self.path.clone(), hashed_list))
             .await;
         match res {
-            Response::File(bytes) => bytes,
+            Response::File(insts) => insts,
             _ => panic!("read file failed"),
         }
     }
@@ -101,6 +105,10 @@ impl SyncCelled for RemoteCell {
 
     fn ty(&self) -> FileTy {
         self.ty
+    }
+
+    fn list(&self) -> &HashedList {
+        &self.list
     }
 }
 

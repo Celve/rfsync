@@ -4,7 +4,11 @@ use async_recursion::async_recursion;
 use futures_util::future::join_all;
 use libc::c_int;
 
-use crate::{comm::oneway::Oneway, fuse::meta::FileTy};
+use crate::{
+    comm::oneway::Oneway,
+    fuse::meta::FileTy,
+    rsync::{hashed::HashedList, inst::InstList},
+};
 
 use super::{
     lean::LeanCelled, remote::RemoteCell, stge::CopyStge, sync::SyncCelled, time::VecTime,
@@ -41,6 +45,7 @@ pub struct CopyCell {
     pub(crate) crt: usize,
     pub(crate) ty: FileTy,
     pub(crate) children: Vec<(String, CopyCell)>,
+    pub(crate) list: HashedList,
 }
 
 impl CopyCell {
@@ -65,6 +70,7 @@ impl CopyCell {
             sync: rc.sync.clone(),
             crt: rc.crt,
             ty: rc.ty,
+            list: rc.list.clone(),
             children,
         }
     }
@@ -82,8 +88,8 @@ impl CopyCell {
 
         Ok(match sop {
             SyncOp::None => Self::none(sid, &rc, stge).await,
-            SyncOp::Copy => Self::copy(sid, &rc, stge).await,
-            SyncOp::Conflict => Self::conflict(sid, &rc, stge).await,
+            SyncOp::Copy => Self::copy(sid, &rc, tree, stge).await?,
+            SyncOp::Conflict => Self::conflict(sid, &rc, tree, stge).await?,
             SyncOp::Recurse => Self::recurse(sid, &rc, tree, stge).await?,
         })
     }
@@ -92,22 +98,34 @@ impl CopyCell {
         CopyCell::from_rc(stge.alloc_cid(), sid, rc, SyncOp::None, Vec::new(), stge).await
     }
 
-    pub async fn copy(sid: u64, rc: &RemoteCell, stge: CopyStge) -> CopyCell {
+    pub async fn copy<const S: usize>(
+        sid: u64,
+        rc: &RemoteCell,
+        tree: SyncTree<S>,
+        stge: CopyStge,
+    ) -> Result<CopyCell, c_int> {
+        let hashed_list = tree.read_by_id(&sid).await?.list.clone();
         let cid = stge.alloc_cid();
-        let bytes = rc.read().await;
+        let bytes = rc.read(hashed_list).await;
         stge.create(&cid).await;
         stge.write(&cid, &bytes).await;
 
-        CopyCell::from_rc(cid, sid, rc, SyncOp::Copy, Vec::new(), stge).await
+        Ok(CopyCell::from_rc(cid, sid, rc, SyncOp::Copy, Vec::new(), stge).await)
     }
 
-    pub async fn conflict(sid: u64, rc: &RemoteCell, stge: CopyStge) -> CopyCell {
+    pub async fn conflict<const S: usize>(
+        sid: u64,
+        rc: &RemoteCell,
+        tree: SyncTree<S>,
+        stge: CopyStge,
+    ) -> Result<CopyCell, c_int> {
+        let hashed_list = tree.read_by_id(&sid).await?.list.clone();
         let cid = stge.alloc_cid();
-        let bytes = rc.read().await;
+        let bytes = rc.read(hashed_list).await;
         stge.create(&cid).await;
         stge.write(&cid, &bytes).await;
 
-        CopyCell::from_rc(cid, sid, rc, SyncOp::Conflict, Vec::new(), stge).await
+        Ok(CopyCell::from_rc(cid, sid, rc, SyncOp::Conflict, Vec::new(), stge).await)
     }
 
     pub async fn recurse<const S: usize>(
@@ -150,7 +168,7 @@ impl CopyCell {
         Ok(Self::from_rc(stge.alloc_cid(), sid, rc, SyncOp::Recurse, children, stge).await)
     }
 
-    pub async fn read(&self) -> Vec<u8> {
+    pub async fn read(&self) -> InstList {
         self.stge.read(&self.cid).await
     }
 }
@@ -176,6 +194,10 @@ impl SyncCelled for CopyCell {
 
     fn ty(&self) -> FileTy {
         self.ty
+    }
+
+    fn list(&self) -> &HashedList {
+        &self.list
     }
 }
 

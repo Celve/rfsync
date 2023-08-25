@@ -14,12 +14,6 @@ pub struct FileReadGuard<'a, const S: usize> {
     _guard: SubsetReadGuard<'a, u64, S>,
 }
 
-pub struct FileWriteGuard<'a, const S: usize> {
-    file: File,
-    path: PathBuf,
-    _guard: SubsetWriteGuard<'a, u64, S>,
-}
-
 impl<'a, const S: usize> FileReadGuard<'a, S> {
     pub fn new(file: File, path: PathBuf, _guard: SubsetReadGuard<'a, u64, S>) -> Self {
         Self { file, path, _guard }
@@ -42,6 +36,24 @@ impl<'a, const S: usize> DerefMut for FileReadGuard<'a, S> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.file
     }
+}
+
+impl<'a, const S: usize> AsRef<File> for FileReadGuard<'a, S> {
+    fn as_ref(&self) -> &File {
+        &self.file
+    }
+}
+
+impl<'a, const S: usize> AsMut<File> for FileReadGuard<'a, S> {
+    fn as_mut(&mut self) -> &mut File {
+        &mut self.file
+    }
+}
+
+pub struct FileWriteGuard<'a, const S: usize> {
+    file: File,
+    path: PathBuf,
+    _guard: SubsetWriteGuard<'a, u64, S>,
 }
 
 impl<'a, const S: usize> FileWriteGuard<'a, S> {
@@ -67,6 +79,18 @@ impl<'a, const S: usize> Deref for FileWriteGuard<'a, S> {
 
 impl<'a, const S: usize> DerefMut for FileWriteGuard<'a, S> {
     fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.file
+    }
+}
+
+impl<'a, const S: usize> AsRef<File> for FileWriteGuard<'a, S> {
+    fn as_ref(&self) -> &File {
+        &self.file
+    }
+}
+
+impl<'a, const S: usize> AsMut<File> for FileWriteGuard<'a, S> {
+    fn as_mut(&mut self) -> &mut File {
         &mut self.file
     }
 }

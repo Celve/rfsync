@@ -16,6 +16,7 @@ use async_recursion::async_recursion;
 use fuser::FUSE_ROOT_ID;
 use libc::c_int;
 use tokio::{
+    fs::File,
     io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt},
     sync::{
         mpsc::{self, Sender},
@@ -37,13 +38,14 @@ use crate::{
         peer::Peer,
     },
     fuse::meta::FileTy,
+    rsync::hashed::{Hashed, HashedDelta},
 };
 
 use super::{
     dir::{DirReadGuard, DirWriteGuard},
     file::{FileReadGuard, FileWriteGuard},
     fs::SyncFs,
-    meta::{Meta, MetaWriteGuard, FUSE_NONE_ID},
+    meta::{Meta, MetaWriteGuard, FUSE_NONE_ID, PAGE_SIZE},
 };
 
 pub struct SyncServer<const S: usize> {
@@ -148,7 +150,7 @@ impl<const S: usize> SyncServer<S> {
             let sid = if !name.ends_with(".nosync") {
                 let (sid, mut sc) = self.tree.create4parent(&mut psc, name).await?;
                 drop(psc);
-                sc.modify(self.tree.mid, self.tree.forward().await, FileTy::File);
+                sc.create(self.tree.mid, self.tree.forward().await, FileTy::File);
                 self.broadcast(sc).await;
                 sid
             } else {
@@ -190,7 +192,7 @@ impl<const S: usize> SyncServer<S> {
             let sid = if !name.ends_with(".nosync") {
                 let (sid, mut sc) = self.tree.create4parent(&mut psc, name).await?;
                 drop(psc);
-                sc.modify(self.tree.mid, self.tree.forward().await, FileTy::Dir);
+                sc.create(self.tree.mid, self.tree.forward().await, FileTy::Dir);
                 self.broadcast(sc).await;
                 sid
             } else {
@@ -224,7 +226,7 @@ impl<const S: usize> SyncServer<S> {
             // modify sync cell
             if meta.sid != FUSE_NONE_ID {
                 let mut sc = self.tree.write_by_id(&meta.sid).await?;
-                sc.modify(self.tree.mid, self.tree.forward().await, FileTy::None);
+                sc.remove(self.tree.mid, self.tree.forward().await);
                 self.broadcast(sc).await;
             }
 
@@ -255,7 +257,7 @@ impl<const S: usize> SyncServer<S> {
                 // modify sync cell
                 if meta.sid != FUSE_NONE_ID {
                     let mut sc = self.tree.write_by_id(&meta.sid).await?;
-                    sc.modify(self.tree.mid, self.tree.forward().await, FileTy::None);
+                    sc.remove(self.tree.mid, self.tree.forward().await);
                     self.broadcast(sc).await;
                 }
 
@@ -309,24 +311,52 @@ impl<const S: usize> SyncServer<S> {
         Ok(bytes)
     }
 
+    pub async fn calc_changes(
+        file: &mut File,
+        left: u64,
+        right: u64,
+    ) -> Result<HashedDelta, c_int> {
+        let mut changes = Vec::new();
+        let mut page = vec![0; PAGE_SIZE];
+        for i in left..=right {
+            file.seek(SeekFrom::Start(i * PAGE_SIZE as u64))
+                .await
+                .map_err(|_| libc::EIO)?;
+            let len = file.read(&mut page).await.map_err(|_| libc::EIO)?;
+            if len == PAGE_SIZE {
+                changes.push(Hashed::new(&page));
+            }
+        }
+
+        Ok(HashedDelta::Modify(left as usize, changes))
+    }
+
     pub async fn write(&self, ino: &u64, offset: &i64, bytes: &[u8]) -> Result<usize, c_int> {
+        let offset = *offset as u64;
         let (mut meta, mut file) = self.fs.modify_file(ino).await?;
         let now = SystemTime::now();
 
         // read from disk
-        file.seek(SeekFrom::Start(*offset as u64))
+        file.seek(SeekFrom::Start(offset))
             .await
             .map_err(|_| libc::EIO)?;
         let len = file.write(bytes).await.map_err(|_| libc::EIO)?;
 
         // modify meta, never forget to modify the size param
         meta.access(now);
-        meta.size = meta.size.max(*offset as u64 + len as u64);
+        meta.size = meta.size.max(offset + len as u64);
 
         // modify sync cell
         if meta.sid != FUSE_NONE_ID {
+            // calculate changes for rsync
+            let (left, right) = (
+                offset / PAGE_SIZE as u64,
+                (offset + len as u64 - 1) / PAGE_SIZE as u64,
+            );
+            let changes = Self::calc_changes(&mut file, left, right).await?;
+
             let mut sc = self.tree.write_by_id(&meta.sid).await?;
-            sc.modify(self.mid(), self.tree.forward().await, FileTy::File);
+            sc.modify(self.mid(), self.tree.forward().await, changes);
             self.broadcast(sc).await;
         }
 
@@ -363,15 +393,24 @@ impl<const S: usize> SyncServer<S> {
         if let Some(size) = size {
             // modify inode
             if size != meta.size {
+                let oldsize = meta.size;
                 meta.size = size;
 
                 // modify file
-                let file = self.fs.write_file(&ino).await?;
+                let mut file = self.fs.write_file(&ino).await?;
                 file.set_len(size).await.map_err(|_| libc::EIO)?;
+
+                // get delta
+                let delta = if oldsize < size {
+                    let (left, right) = (oldsize / PAGE_SIZE as u64, size / PAGE_SIZE as u64);
+                    Self::calc_changes(&mut file, left, right).await?
+                } else {
+                    HashedDelta::Shrink(size as usize / PAGE_SIZE)
+                };
 
                 if meta.sid != FUSE_NONE_ID {
                     let mut sc = self.tree.write_by_id(&meta.sid).await?;
-                    sc.modify(self.mid(), self.tree.forward().await, FileTy::File);
+                    sc.modify(self.mid(), self.tree.forward().await, delta);
                     self.broadcast(sc).await;
                 }
             }
@@ -493,11 +532,11 @@ impl<const S: usize> SyncServer<S> {
                 if cc.ty == FileTy::File {
                     sc.substituted(&cc);
                     let mut file = self.fs.write_file(&ino).await?;
-                    let bytes = cc.read().await;
-                    file.write(&bytes).await.map_err(|_| libc::EIO)?;
+                    let insts = cc.read().await;
+                    let len = insts.recover(&mut file).await;
 
                     meta.modify(SystemTime::now());
-                    meta.size = bytes.len() as u64;
+                    meta.size = len as u64;
 
                     Ok(())
                 } else if cc.ty == FileTy::None {
@@ -616,9 +655,9 @@ impl<const S: usize> SyncServer<S> {
             pmeta.modify(now);
 
             let mut tfile = self.fs.write_file(&ino).await?;
-            let bytes = cc.read().await;
-            tfile.write(&bytes).await.map_err(|_| libc::EIO)?;
-            tmeta.size = bytes.len() as u64;
+            let insts = cc.read().await;
+            let len = insts.recover(&mut tfile).await;
+            tmeta.size = len as u64;
 
             Ok(())
         } else {

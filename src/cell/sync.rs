@@ -12,6 +12,7 @@ use crate::{
     buffer::guard::{BufferReadGuard, BufferWriteGuard},
     disk::serde::PrefixSerdeDiskManager,
     fuse::meta::FileTy,
+    rsync::hashed::{Hashed, HashedDelta, HashedList},
 };
 
 use super::{copy::SyncOp, lean::LeanCelled, time::VecTime, tree::SyncTree};
@@ -43,11 +44,14 @@ pub struct SyncCell {
     /// An empty directory could be regarded as a file.
     /// No difference in synchronization.
     pub(crate) children: HashMap<String, u64>,
+
+    pub(crate) list: HashedList,
 }
 
 pub trait SyncCelled: LeanCelled {
     fn crt(&self) -> usize;
     fn ty(&self) -> FileTy;
+    fn list(&self) -> &HashedList;
 }
 
 pub type SyncCellDiskManager = PrefixSerdeDiskManager<u64, SyncCell>;
@@ -64,7 +68,7 @@ pub struct SyncCellWriteGuard<'a, const S: usize> {
 
 impl SyncCell {
     /// Give `sync` beforehand to support inheritance.
-    pub fn create(&mut self, sid: u64, parent: u64, path: PathBuf, sync: VecTime) {
+    pub fn init(&mut self, sid: u64, parent: u64, path: PathBuf, sync: VecTime) {
         self.sid = sid;
         self.parent = parent;
         self.path = path;
@@ -78,12 +82,39 @@ impl SyncCell {
         self.ty = ty;
     }
 
-    pub fn modify(&mut self, mid: usize, time: usize, ty: FileTy) {
-        if self.ty == FileTy::None {
-            self.crt = time;
-        }
+    pub fn create(&mut self, mid: usize, time: usize, ty: FileTy) {
+        self.crt = time;
         self.ty = ty;
+        self.update(mid, time);
+        self.list.clear();
+    }
 
+    pub fn modify(&mut self, mid: usize, time: usize, delta: HashedDelta) {
+        match delta {
+            HashedDelta::Modify(begin, changes) => {
+                if !changes.is_empty() {
+                    let newlen = begin + changes.len();
+                    if newlen > self.list.len() {
+                        self.list.resize(newlen, Hashed::default());
+                    }
+                    for (idx, change) in changes.into_iter().enumerate() {
+                        self.list[begin + idx] = change;
+                    }
+                }
+            }
+
+            HashedDelta::Shrink(len) => self.list.shrink_to(len),
+        }
+        self.update(mid, time);
+    }
+
+    pub fn remove(&mut self, mid: usize, time: usize) {
+        self.ty = FileTy::None;
+        self.update(mid, time);
+        self.list.clear();
+    }
+
+    fn update(&mut self, mid: usize, time: usize) {
         if let Some(old_time) = self.modif.get(mid) {
             if old_time < time {
                 self.modif.insert(mid, time);
@@ -104,6 +135,7 @@ impl SyncCell {
         self.merge(other);
         self.crt = other.crt();
         self.ty = other.ty();
+        self.list = other.list().clone();
     }
 
     /// Synchronize the file with another server.
@@ -180,6 +212,10 @@ impl SyncCelled for SyncCell {
 
     fn ty(&self) -> FileTy {
         self.ty
+    }
+
+    fn list(&self) -> &HashedList {
+        &self.list
     }
 }
 

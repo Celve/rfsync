@@ -127,6 +127,7 @@ impl<const S: usize> SyncFs<S> {
         let path = self.path.join("file").join(ino.to_string());
         Ok(FileWriteGuard::new(
             OpenOptions::new()
+                .read(true)
                 .write(true)
                 .open(&path)
                 .await

@@ -6,7 +6,6 @@ use tokio::fs::{self, File};
 
 use crate::buffer::disk::DiskManager;
 
-#[derive(Clone)]
 pub struct PrefixSerdeDiskManager<K, V>
 where
     K: Display + Send + Sync,
@@ -67,5 +66,19 @@ where
         fs::remove_file(&self.path(key))
             .await
             .expect("fail to remove value from disk");
+    }
+}
+
+impl<K, V> Clone for PrefixSerdeDiskManager<K, V>
+where
+    K: Display + Send + Sync,
+    V: DeserializeOwned + Serialize + Send + Sync,
+{
+    fn clone(&self) -> Self {
+        Self {
+            path: self.path.clone(),
+            key: self.key.clone(),
+            value: self.value.clone(),
+        }
     }
 }

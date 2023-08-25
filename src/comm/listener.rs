@@ -6,7 +6,11 @@ use tokio::{
 };
 use tracing::info;
 
-use crate::{cell::remote::RemoteCell, fuse::server::SyncServer};
+use crate::{
+    cell::remote::RemoteCell,
+    fuse::server::SyncServer,
+    rsync::{inst::InstList, table::HashTable},
+};
 
 use super::oneway::{Oneway, Request, Response};
 
@@ -46,23 +50,21 @@ impl<const S: usize> Listener<S> {
                                 .await
                                 .unwrap();
                         }
-                        Request::ReadFile(path) => {
-                            info!("[rpc] send file {:?}", &path);
+
+                        Request::ReadFile(path, hashed_list) => {
+                            info!("[rpc] send file {:?} with {:?}", &path, hashed_list);
                             let file = srv.read_file_by_path(&path).await;
-                            let bytes = if let Ok(mut file) = file {
-                                let mut bytes = Vec::new();
-                                file.read_to_end(&mut bytes)
-                                    .await
-                                    .expect("read file failed");
-                                bytes
+                            let insts = if let Ok(mut file) = file {
+                                HashTable::new(&hashed_list).reconstruct(&mut file).await
                             } else {
-                                Vec::new()
+                                InstList::new()
                             };
                             stream
-                                .write(&bincode::serialize(&Response::File(bytes)).unwrap())
+                                .write(&bincode::serialize(&Response::File(insts)).unwrap())
                                 .await
                                 .unwrap();
                         }
+
                         Request::SyncCell(peer, path) => {
                             info!("[rpc] asked to sync cell {:?}", &path);
                             let (ino, path) = srv.get_existing_ino_by_path(&path).await;

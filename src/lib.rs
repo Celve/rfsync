@@ -10,4 +10,5 @@ pub mod cell;
 pub mod comm;
 pub mod disk;
 pub mod fuse;
+pub mod rsync;
 pub mod subset;

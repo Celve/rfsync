@@ -75,7 +75,7 @@ impl<const S: usize> SyncTree<S> {
             let sid = self.alloc_sid().await;
             parent.children.insert(name.to_string(), sid);
             let mut guard = SyncCellWriteGuard::new(self.bp.create(&sid).await?, self.clone());
-            guard.create(sid, parent.sid, parent.path.join(name), parent.sync.clone());
+            guard.init(sid, parent.sid, parent.path.join(name), parent.sync.clone());
             (sid, guard)
         })
     }

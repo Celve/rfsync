@@ -498,7 +498,7 @@ impl<const S: usize> SyncServer<S> {
 
         let meta = meta?;
         let mut sc = self.tree.write_by_id(&meta.sid).await?;
-        if sc.calc_sync_op(&cc) == cc.sop {
+        if sc.modif == cc.ver {
             sc.merge(&cc);
             Ok(())
         } else {
@@ -521,7 +521,7 @@ impl<const S: usize> SyncServer<S> {
 
         let mut meta = meta?;
         let mut sc = self.tree.write_by_id(&meta.sid).await?;
-        if sc.calc_sync_op(&cc) == cc.sop {
+        if sc.modif == cc.ver {
             if sc.ty == FileTy::Dir {
                 let pino = meta.parent;
                 drop(meta);
@@ -533,6 +533,7 @@ impl<const S: usize> SyncServer<S> {
                     sc.substituted(&cc);
                     let mut file = self.fs.write_file(&ino).await?;
                     let insts = cc.read().await;
+                    println!("try to recover with {:?} and {}", sc.deref(), cc);
                     let len = insts.recover(&mut file).await;
 
                     meta.modify(SystemTime::now());
@@ -621,7 +622,7 @@ impl<const S: usize> SyncServer<S> {
             sc.deref(),
             cc
         );
-        if sc.calc_sync_op(&cc) == cc.sop {
+        if sc.modif == cc.ver {
             let pino = meta.parent;
             drop(meta);
             drop(sc);
@@ -681,7 +682,7 @@ impl<const S: usize> SyncServer<S> {
 
         let mut meta = meta?;
         let mut sc = self.tree.write_by_id(&meta.sid).await?;
-        if sc.calc_sync_op(&cc) == cc.sop {
+        if sc.modif == cc.ver {
             sc.substituted(&cc);
 
             // convert file to dir if necessary

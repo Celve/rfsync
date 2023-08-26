@@ -55,7 +55,13 @@ impl<const S: usize> Listener<S> {
                             info!("[rpc] send file {:?} with {:?}", &path, hashed_list);
                             let file = srv.read_file_by_path(&path).await;
                             let insts = if let Ok(mut file) = file {
-                                HashTable::new(&hashed_list).reconstruct(&mut file).await
+                                let mut insts = InstList::new();
+                                let hash_table = HashTable::new(&hashed_list);
+                                let mut reconstructor = hash_table.reconstruct(&mut file);
+                                while let Some(delta) = reconstructor.next().await {
+                                    insts.extend(delta.into_iter());
+                                }
+                                insts
                             } else {
                                 InstList::new()
                             };

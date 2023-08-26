@@ -17,7 +17,7 @@ use crate::{
 
 use super::{copy::SyncOp, lean::LeanCelled, time::VecTime, tree::SyncTree};
 
-#[derive(Default, Deserialize, Serialize)]
+#[derive(Default, Deserialize, Serialize, Debug)]
 pub struct SyncCell {
     /// And unique identifier to fetch `SyncCell` from disk.
     pub(crate) sid: u64,

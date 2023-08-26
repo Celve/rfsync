@@ -1,7 +1,6 @@
 use std::{
     collections::{HashMap, HashSet},
     io::SeekFrom,
-    ops::{Deref, DerefMut},
 };
 
 use serde::{Deserialize, Serialize};
@@ -20,12 +19,24 @@ pub fn byte2page_1based(offset: usize) -> usize {
     (offset + PAGE_SIZE - 1) / PAGE_SIZE
 }
 
+pub fn byte2page_0based(offset: usize) -> usize {
+    offset / PAGE_SIZE
+}
+
 #[derive(Deserialize, Serialize, Debug)]
 pub struct InstList(Vec<Inst>);
 
 impl InstList {
     pub fn new() -> Self {
         Self(Vec::new())
+    }
+
+    pub fn push(&mut self, inst: Inst) {
+        self.0.push(inst);
+    }
+
+    pub fn extend<I: IntoIterator<Item = Inst>>(&mut self, iter: I) {
+        self.0.extend(iter);
     }
 
     pub async fn corrupt<RW>(
@@ -38,7 +49,9 @@ impl InstList {
     {
         let mut buf = vec![0; PAGE_SIZE];
         for i in last..curr {
-            file.seek(SeekFrom::Start(i as u64)).await.unwrap();
+            file.seek(SeekFrom::Start((i * PAGE_SIZE) as u64))
+                .await
+                .unwrap();
             let len = file.read(&mut buf).await.unwrap();
             if len == PAGE_SIZE {
                 relay.insert(i, buf.clone());
@@ -65,9 +78,23 @@ impl InstList {
         let mut len = 0;
         for inst in &self.0 {
             let delta = match inst {
+                Inst::Fill(bytes) => bytes.len(),
+                Inst::Copy(_) => PAGE_SIZE,
+            };
+
+            // corrupt before overwrited
+            Self::corrupt(
+                subfile,
+                &mut relay,
+                byte2page_1based(len),
+                byte2page_1based(len + delta),
+            )
+            .await;
+
+            match inst {
                 Inst::Fill(bytes) => {
                     subfile.seek(SeekFrom::Start(len as u64)).await.unwrap();
-                    subfile.write(&bytes).await.unwrap()
+                    subfile.write(&bytes).await.unwrap();
                 }
 
                 Inst::Copy(offset) => {
@@ -86,18 +113,8 @@ impl InstList {
                         subfile.seek(SeekFrom::Start(len as u64)).await.unwrap();
                         subfile.write(relay.get(offset).unwrap()).await.unwrap();
                     }
-
-                    PAGE_SIZE
                 }
             };
-
-            Self::corrupt(
-                subfile,
-                &mut relay,
-                byte2page_1based(len),
-                byte2page_1based(len + delta),
-            )
-            .await;
 
             len += delta;
         }
@@ -106,16 +123,12 @@ impl InstList {
     }
 }
 
-impl Deref for InstList {
-    type Target = Vec<Inst>;
+impl IntoIterator for InstList {
+    type Item = Inst;
 
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
+    type IntoIter = std::vec::IntoIter<Inst>;
 
-impl DerefMut for InstList {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.0
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.into_iter()
     }
 }

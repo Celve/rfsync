@@ -54,6 +54,7 @@ impl HashTable {
         let mut stack = Vec::new();
         let mut bytes = vec![0; PAGE_SIZE];
         let mut insts = InstList::new();
+        let mut pagenum = 0;
 
         loop {
             let len = reader.as_mut().read(&mut bytes).await.unwrap();
@@ -66,17 +67,26 @@ impl HashTable {
                 if let Some(rolling) = calculator.compute() {
                     if let Some(entries) = self.table.get(&rolling) {
                         let md5: Md5 = md5::compute(&stack[(stack.len() - PAGE_SIZE)..]).into();
+                        let mut offset = None;
                         for entry in entries {
                             if entry.md5 == md5 {
-                                if stack.len() > PAGE_SIZE {
-                                    stack.resize(stack.len() - PAGE_SIZE, 0);
-                                    insts.push(Inst::Fill(stack));
+                                if entry.offset >= pagenum {
+                                    offset = Some(entry.offset);
+                                    break;
+                                } else if offset.is_none() {
+                                    offset = Some(entry.offset);
                                 }
-                                let copy_inst = Inst::Copy(entry.offset);
-                                insts.push(copy_inst);
-                                stack = Vec::new();
-                                calculator.clear();
                             }
+                        }
+
+                        if let Some(offset) = offset {
+                            if stack.len() > PAGE_SIZE {
+                                stack.resize(stack.len() - PAGE_SIZE, 0);
+                                insts.push(Inst::Fill(stack));
+                            }
+                            insts.push(Inst::Copy(offset));
+                            stack = Vec::new();
+                            calculator.clear();
                         }
                     }
                 }
@@ -85,6 +95,7 @@ impl HashTable {
             if len < PAGE_SIZE {
                 break;
             }
+            pagenum += 1;
         }
 
         if stack.len() != 0 {

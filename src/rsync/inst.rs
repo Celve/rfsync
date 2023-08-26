@@ -16,6 +16,10 @@ pub enum Inst {
     Copy(usize),
 }
 
+pub fn byte2page_1based(offset: usize) -> usize {
+    (offset + PAGE_SIZE - 1) / PAGE_SIZE
+}
+
 #[derive(Deserialize, Serialize, Debug)]
 pub struct InstList(Vec<Inst>);
 
@@ -40,10 +44,6 @@ impl InstList {
                 relay.insert(i, buf.clone());
             }
         }
-    }
-
-    fn byte2page_1based(offset: usize) -> usize {
-        (offset + PAGE_SIZE - 1) / PAGE_SIZE
     }
 
     pub async fn recover<MRW, RW>(&self, file: &mut MRW) -> usize
@@ -71,7 +71,7 @@ impl InstList {
                 }
 
                 Inst::Copy(offset) => {
-                    if *offset >= Self::byte2page_1based(len) {
+                    if *offset >= byte2page_1based(len) {
                         if *offset * PAGE_SIZE != len {
                             subfile
                                 .seek(SeekFrom::Start((*offset * PAGE_SIZE) as u64))
@@ -94,8 +94,8 @@ impl InstList {
             Self::corrupt(
                 subfile,
                 &mut relay,
-                Self::byte2page_1based(len),
-                Self::byte2page_1based(len + delta),
+                byte2page_1based(len),
+                byte2page_1based(len + delta),
             )
             .await;
 

@@ -1,18 +1,19 @@
 use std::net::SocketAddr;
 
-use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
-    net::TcpListener,
-};
+use tokio::{io::AsyncReadExt, net::TcpListener};
 use tracing::info;
 
 use crate::{
     cell::remote::RemoteCell,
+    comm::iter::Iterator,
     fuse::server::SyncServer,
-    rsync::{inst::InstList, table::HashTable}, comm::iter::Iterator,
+    rsync::{reconstruct::Reconstructor, table::HashTable},
 };
 
-use super::oneway::{Oneway, Request, Response};
+use super::{
+    oneway::{Oneway, Request, Response},
+    valve::Valve,
+};
 
 pub struct Listener<const S: usize> {
     srv: SyncServer<S>,
@@ -36,6 +37,8 @@ impl<const S: usize> Listener<S> {
                 let n = stream.read_to_end(&mut buf).await.unwrap();
 
                 if n != 0 {
+                    let mut valve = Valve::new(stream);
+
                     let req = bincode::deserialize::<Request>(&buf).unwrap();
                     match req {
                         Request::ReadCell(path) => {
@@ -45,30 +48,33 @@ impl<const S: usize> Listener<S> {
                                 RemoteCell::empty(path)
                             };
                             info!("[rpc] send {:?}", rc);
-                            stream
-                                .write(&bincode::serialize(&Response::Cell(rc)).unwrap())
-                                .await
-                                .unwrap();
+                            valve.send(&Response::Cell(rc)).await;
                         }
 
-                        Request::ReadFile(path, hashed_list) => {
+                        Request::ReadFile(path, ver, hashed_list) => {
                             info!("[rpc] send file {:?} with {:?}", &path, hashed_list);
-                            let file = srv.read_file_by_path(&path).await;
-                            let insts = if let Ok(mut file) = file {
-                                let mut insts = InstList::new();
-                                let hash_table = HashTable::new(&hashed_list);
-                                let mut reconstructor = hash_table.reconstruct(&mut file);
-                                while let Some(delta) = reconstructor.next().await {
-                                    insts.extend(delta.into_iter());
-                                }
-                                insts
+                            let sc = srv.tree.read_by_path(&path).await.unwrap();
+                            if sc.modif == ver {
+                                let file = srv.read_file_by_path(&path).await;
+                                if let Ok(mut file) = file {
+                                    let hash_table = HashTable::new(&hashed_list);
+                                    let mut reconstructor =
+                                        Reconstructor::new(&hash_table, &mut file);
+                                    while let Some(delta) = reconstructor.next().await {
+                                        valve.send(&Response::File(delta)).await;
+                                    }
+                                } else {
+                                    valve.send(&Response::File(Vec::new())).await;
+                                };
                             } else {
-                                InstList::new()
-                            };
-                            stream
-                                .write(&bincode::serialize(&Response::File(insts)).unwrap())
-                                .await
-                                .unwrap();
+                                info!("[rpc] outdated");
+                                valve
+                                    .send(&Response::Outdated(RemoteCell::from_sc(
+                                        &sc,
+                                        Oneway::new(self.addr),
+                                    )))
+                                    .await;
+                            }
                         }
 
                         Request::SyncCell(peer, path) => {
@@ -78,14 +84,13 @@ impl<const S: usize> Listener<S> {
                                 .sync(ino, RemoteCell::from_ow(path, peer.into()).await)
                                 .await;
                             if res.is_ok() {
-                                let res = bincode::serialize(&Response::Sync).unwrap();
-                                stream.write(&res).await.unwrap();
+                                valve.send(&Response::Sync).await;
                             } else {
                                 panic!("fail to sync");
                             }
                         }
                     }
-                    stream.shutdown().await.unwrap();
+                    valve.shutdown().await;
                 } else {
                     println!("Find a empty connection");
                 }

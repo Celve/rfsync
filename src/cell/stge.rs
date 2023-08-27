@@ -6,11 +6,11 @@ use std::{
     },
 };
 
-use crate::{
-    buffer::disk::DiskManager, disk::serde::PrefixSerdeDiskManager, rsync::inst::InstList,
-};
+use tokio::fs::File;
 
-pub type CopyCellDiskManager = PrefixSerdeDiskManager<u64, InstList>;
+use crate::{buffer::disk::DiskManager, disk::serde::PrefixSerdeDiskManager, rsync::inst::Inst};
+
+pub type CopyCellDiskManager = PrefixSerdeDiskManager<u64, Vec<Inst>>;
 
 pub struct CopyStge {
     ncid: Arc<AtomicU64>,
@@ -33,16 +33,24 @@ impl CopyStge {
         self.dm.create(cid).await;
     }
 
-    pub async fn read(&self, cid: &u64) -> InstList {
+    pub async fn read(&self, cid: &u64) -> Vec<Inst> {
         self.dm.read(cid).await
     }
 
-    pub async fn write(&self, cid: &u64, insts: &InstList) {
+    pub async fn write(&self, cid: &u64, insts: &Vec<Inst>) {
         self.dm.write(cid, insts).await
     }
 
     pub async fn remove(&self, cid: &u64) {
         self.dm.remove(cid).await;
+    }
+
+    pub async fn read_as_stream(&self, cid: &u64) -> File {
+        self.dm.read_as_stream(cid).await
+    }
+
+    pub async fn write_as_stream(&self, cid: &u64) -> File {
+        self.dm.write_as_stream(cid).await
     }
 }
 

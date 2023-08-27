@@ -34,11 +34,16 @@ use crate::{
         tree::SyncTree,
     },
     comm::{
+        iter::Iterator,
         oneway::{Oneway, Request, Response},
         peer::Peer,
     },
     fuse::meta::FileTy,
-    rsync::hashed::{Hashed, HashedDelta},
+    rsync::{
+        hashed::{Hashed, HashedDelta},
+        inst::Inst,
+        recover::Recovery,
+    },
 };
 
 use super::{
@@ -87,9 +92,10 @@ impl<const S: usize> SyncServer<S> {
 
     pub async fn sendaway(&self, peer: &Peer, path: &PathBuf) {
         loop {
-            let res = Oneway::from(*peer)
+            let mut faucet = Oneway::from(*peer)
                 .request(&Request::SyncCell(self.me, path.clone()))
                 .await;
+            let res = faucet.next().await.unwrap();
             if let Response::Sync = res {
                 break;
             }
@@ -509,6 +515,23 @@ impl<const S: usize> SyncServer<S> {
         }
     }
 
+    pub async fn recover(
+        recovery: &mut Recovery<'_, File>,
+        mut raw: impl AsyncSeekExt + AsyncReadExt + Unpin,
+    ) -> usize {
+        while let Ok(len) = raw.read_u64().await {
+            let mut buf = vec![0; len as usize];
+            raw.read_exact(&mut buf).await.unwrap();
+
+            let insts: Vec<Inst> = bincode::deserialize(&buf).unwrap();
+            for inst in insts {
+                recovery.recover(inst).await;
+            }
+        }
+
+        recovery.len
+    }
+
     pub async fn replace_for_copy(
         &self,
         ino: u64,
@@ -532,9 +555,9 @@ impl<const S: usize> SyncServer<S> {
                 if cc.ty == FileTy::File {
                     sc.substituted(&cc);
                     let mut file = self.fs.write_file(&ino).await?;
-                    let insts = cc.read().await;
-                    println!("try to recover with {:?} and {}", sc.deref(), cc);
-                    let len = insts.recover(&mut file).await;
+                    let raw = cc.read().await;
+                    let mut recovery = Recovery::new(&mut file);
+                    let len = Self::recover(&mut recovery, raw).await;
 
                     meta.modify(SystemTime::now());
                     meta.size = len as u64;
@@ -656,8 +679,9 @@ impl<const S: usize> SyncServer<S> {
             pmeta.modify(now);
 
             let mut tfile = self.fs.write_file(&ino).await?;
-            let insts = cc.read().await;
-            let len = insts.recover(&mut tfile).await;
+            let raw = cc.read().await;
+            let mut recovery = Recovery::new(&mut tfile);
+            let len = Self::recover(&mut recovery, raw).await;
             tmeta.size = len as u64;
 
             Ok(())

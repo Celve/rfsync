@@ -2,7 +2,7 @@ use std::{fmt::Display, marker::PhantomData, path::PathBuf};
 
 use async_trait::async_trait;
 use serde::{de::DeserializeOwned, Serialize};
-use tokio::fs::{self, File};
+use tokio::fs::{self, File, OpenOptions};
 
 use crate::buffer::disk::DiskManager;
 
@@ -66,6 +66,22 @@ where
         fs::remove_file(&self.path(key))
             .await
             .expect("fail to remove value from disk");
+    }
+
+    async fn read_as_stream(&self, key: &K) -> File {
+        OpenOptions::new()
+            .read(true)
+            .open(self.path(key))
+            .await
+            .expect("fail to read value from disk")
+    }
+
+    async fn write_as_stream(&self, key: &K) -> File {
+        OpenOptions::new()
+            .write(true)
+            .open(self.path(key))
+            .await
+            .expect("fail to write value to disk")
     }
 }
 

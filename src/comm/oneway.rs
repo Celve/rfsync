@@ -4,30 +4,28 @@ use std::{
 };
 
 use serde::{Deserialize, Serialize};
-use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
-    net::TcpStream,
-};
+use tokio::{io::AsyncWriteExt, net::TcpStream};
 
 use crate::{
-    cell::remote::RemoteCell,
-    rsync::{hashed::HashedList, inst::InstList},
+    cell::{remote::RemoteCell, time::VecTime},
+    rsync::{hashed::HashedList, inst::Inst},
 };
 
-use super::peer::Peer;
+use super::{faucet::Faucet, peer::Peer};
 
 #[derive(Deserialize, Serialize, Debug)]
 pub enum Request {
     ReadCell(PathBuf),
-    ReadFile(PathBuf, HashedList),
+    ReadFile(PathBuf, VecTime, HashedList),
     SyncCell(Peer, PathBuf),
 }
 
 #[derive(Deserialize, Serialize)]
 pub enum Response {
     Cell(RemoteCell),
-    File(InstList),
+    File(Vec<Inst>),
     Sync,
+    Outdated(RemoteCell),
     Err(String),
 }
 
@@ -41,7 +39,7 @@ impl Oneway {
         Self { addr }
     }
 
-    pub async fn request(&self, req: &Request) -> Response {
+    pub async fn request(&self, req: &Request) -> Faucet<Response> {
         let mut stream = TcpStream::connect(self.addr).await.unwrap();
 
         // send request
@@ -49,10 +47,7 @@ impl Oneway {
         stream.write(&req).await.unwrap();
         stream.shutdown().await.unwrap();
 
-        // receive response
-        let mut buf = Vec::new();
-        stream.read_to_end(&mut buf).await.unwrap();
-        bincode::deserialize::<Response>(&buf).unwrap()
+        Faucet::new(stream)
     }
 }
 

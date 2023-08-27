@@ -2,5 +2,7 @@
 
 pub mod hashed;
 pub mod inst;
+pub mod reconstruct;
+pub mod recover;
 pub mod roll;
 pub mod table;

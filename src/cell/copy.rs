@@ -3,12 +3,9 @@ use std::{collections::VecDeque, fmt::Display, path::PathBuf};
 use async_recursion::async_recursion;
 use futures_util::future::join_all;
 use libc::c_int;
+use tokio::io::{AsyncReadExt, AsyncSeekExt};
 
-use crate::{
-    comm::oneway::Oneway,
-    fuse::meta::FileTy,
-    rsync::{hashed::HashedList, inst::InstList},
-};
+use crate::{comm::oneway::Oneway, fuse::meta::FileTy, rsync::hashed::HashedList};
 
 use super::{
     lean::LeanCelled, remote::RemoteCell, stge::CopyStge, sync::SyncCelled, time::VecTime,
@@ -125,20 +122,25 @@ impl CopyCell {
     ) -> Result<CopyCell, c_int> {
         let sc = tree.read_by_id(&sid).await?;
         let cid = stge.alloc_cid();
-        let bytes = rc.read(sc.list.clone()).await;
         stge.create(&cid).await;
-        stge.write(&cid, &bytes).await;
-
-        Ok(CopyCell::from_rc(
-            cid,
-            sid,
-            rc,
-            SyncOp::Copy,
-            sc.modif.clone(),
-            Vec::new(),
-            stge,
-        )
-        .await)
+        if let Some(rc) = rc
+            .read_to_stream(sc.list.clone(), stge.write_as_stream(&cid).await)
+            .await
+        {
+            drop(sc);
+            Self::make(sid, rc, tree, stge).await
+        } else {
+            Ok(CopyCell::from_rc(
+                cid,
+                sid,
+                rc,
+                SyncOp::Copy,
+                sc.modif.clone(),
+                Vec::new(),
+                stge,
+            )
+            .await)
+        }
     }
 
     pub async fn conflict<const S: usize>(
@@ -149,20 +151,25 @@ impl CopyCell {
     ) -> Result<CopyCell, c_int> {
         let sc = tree.read_by_id(&sid).await?;
         let cid = stge.alloc_cid();
-        let bytes = rc.read(sc.list.clone()).await;
         stge.create(&cid).await;
-        stge.write(&cid, &bytes).await;
-
-        Ok(CopyCell::from_rc(
-            cid,
-            sid,
-            rc,
-            SyncOp::Conflict,
-            sc.modif.clone(),
-            Vec::new(),
-            stge,
-        )
-        .await)
+        if let Some(rc) = rc
+            .read_to_stream(sc.list.clone(), stge.write_as_stream(&cid).await)
+            .await
+        {
+            drop(sc);
+            Self::make(sid, rc, tree, stge).await
+        } else {
+            Ok(CopyCell::from_rc(
+                cid,
+                sid,
+                rc,
+                SyncOp::Conflict,
+                sc.modif.clone(),
+                Vec::new(),
+                stge,
+            )
+            .await)
+        }
     }
 
     pub async fn recurse<const S: usize>(
@@ -214,8 +221,8 @@ impl CopyCell {
         .await)
     }
 
-    pub async fn read(&self) -> InstList {
-        self.stge.read(&self.cid).await
+    pub async fn read(&self) -> impl AsyncSeekExt + AsyncReadExt + Unpin {
+        self.stge.read_as_stream(&self.cid).await
     }
 }
 

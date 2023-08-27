@@ -1,11 +1,15 @@
 use std::{fmt::Debug, path::PathBuf};
 
 use serde::{Deserialize, Serialize};
+use tokio::io::AsyncWriteExt;
 
 use crate::{
-    comm::oneway::{Oneway, Request, Response},
+    comm::{
+        iter::Iterator,
+        oneway::{Oneway, Request, Response},
+    },
     fuse::meta::FileTy,
-    rsync::{hashed::HashedList, inst::InstList},
+    rsync::hashed::HashedList,
 };
 
 use super::{
@@ -43,7 +47,8 @@ pub struct RemoteCell {
 
 impl RemoteCell {
     pub async fn from_ow(path: PathBuf, oneway: Oneway) -> Self {
-        let res = oneway.request(&Request::ReadCell(path)).await;
+        let mut faucet = oneway.request(&Request::ReadCell(path)).await;
+        let res = faucet.next().await.unwrap();
 
         if let Response::Cell(rc) = res {
             rc
@@ -72,15 +77,32 @@ impl RemoteCell {
         }
     }
 
-    pub async fn read(&self, hashed_list: HashedList) -> InstList {
-        let res = self
+    pub async fn read_to_stream(
+        &self,
+        hashed_list: HashedList,
+        mut file: impl AsyncWriteExt + Unpin,
+    ) -> Option<RemoteCell> {
+        let mut faucet = self
             .oneway
-            .request(&Request::ReadFile(self.path.clone(), hashed_list))
+            .request(&Request::ReadFile(
+                self.path.clone(),
+                self.modif.clone(),
+                hashed_list,
+            ))
             .await;
-        match res {
-            Response::File(insts) => insts,
-            _ => panic!("read file failed"),
+        while let Some(reply) = faucet.next().await {
+            if let Response::File(insts) = reply {
+                let buf = bincode::serialize(&insts).unwrap();
+                file.write_u64(buf.len() as u64).await.unwrap();
+                file.write_all(&buf).await.unwrap();
+            } else if let Response::Outdated(rc) = reply {
+                return Some(rc);
+            } else {
+                panic!("")
+            }
         }
+
+        None
     }
 }
 

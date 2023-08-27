@@ -5,7 +5,7 @@ use futures_util::future::join_all;
 use libc::c_int;
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
 
-use crate::{comm::oneway::Oneway, fuse::meta::FileTy, rsync::hashed::HashedList};
+use crate::{fuse::meta::FileTy, rpc::oneway::Oneway, rsync::hashed::HashedList};
 
 use super::{
     lean::LeanCelled, remote::RemoteCell, stge::CopyStge, sync::SyncCelled, time::VecTime,

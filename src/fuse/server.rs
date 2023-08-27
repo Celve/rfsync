@@ -33,12 +33,12 @@ use crate::{
         sync::SyncCellWriteGuard,
         tree::SyncTree,
     },
-    comm::{
+    fuse::meta::FileTy,
+    rpc::{
         iter::Iterator,
         oneway::{Oneway, Request, Response},
         peer::Peer,
     },
-    fuse::meta::FileTy,
     rsync::{
         hashed::{Hashed, HashedDelta},
         inst::Inst,

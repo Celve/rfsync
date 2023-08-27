@@ -5,8 +5,8 @@ use tracing::info;
 
 use crate::{
     cell::remote::RemoteCell,
-    comm::iter::Iterator,
     fuse::server::SyncServer,
+    rpc::iter::Iterator,
     rsync::{reconstruct::Reconstructor, table::HashTable},
 };
 

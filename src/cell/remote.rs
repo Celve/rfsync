@@ -4,11 +4,11 @@ use serde::{Deserialize, Serialize};
 use tokio::io::AsyncWriteExt;
 
 use crate::{
-    comm::{
+    fuse::meta::FileTy,
+    rpc::{
         iter::Iterator,
         oneway::{Oneway, Request, Response},
     },
-    fuse::meta::FileTy,
     rsync::hashed::HashedList,
 };
 

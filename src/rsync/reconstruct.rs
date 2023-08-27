@@ -1,8 +1,8 @@
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncSeekExt};
 
 use crate::{
-    comm::iter::Iterator,
     fuse::meta::PAGE_SIZE,
+    rpc::iter::Iterator,
     rsync::{inst::Inst, roll::RollingCalculator},
 };
 

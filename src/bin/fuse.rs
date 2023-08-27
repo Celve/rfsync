@@ -9,8 +9,8 @@ use fuser::MountOption;
 use home::home_dir;
 use log::LevelFilter;
 use rfsync::{
-    comm::{listener::Listener, peer::Peer},
     fuse::{fuse::SyncFuse, server::SyncServer},
+    rpc::{listener::Listener, peer::Peer},
 };
 
 const BUFFER_POOL_SIZE: usize = 1024;

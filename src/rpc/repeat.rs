@@ -1,25 +1,19 @@
-use std::marker::PhantomData;
-
 use serde::{de::DeserializeOwned, Serialize};
 use tokio::{io::AsyncWriteExt, net::TcpStream};
 
-pub struct Valve<T> {
+pub struct Repeater {
     stream: TcpStream,
-    data: PhantomData<T>,
 }
 
-impl<T> Valve<T>
-where
-    T: DeserializeOwned + Serialize + Send + Sync,
-{
+impl Repeater {
     pub fn new(stream: TcpStream) -> Self {
-        Self {
-            stream,
-            data: Default::default(),
-        }
+        Self { stream }
     }
 
-    pub async fn send(&mut self, data: &T) {
+    pub async fn send<T>(&mut self, data: &T)
+    where
+        T: DeserializeOwned + Serialize + Send + Sync,
+    {
         let buf = bincode::serialize(data).unwrap();
         let len = buf.len() as u64;
         self.stream.write_u64(len).await.unwrap();

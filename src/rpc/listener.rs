@@ -6,13 +6,13 @@ use tracing::info;
 use crate::{
     cell::remote::RemoteCell,
     fuse::server::SyncServer,
-    rpc::iter::Iterator,
+    rpc::{iter::Iterator, request::InstsOrRemoteCell},
     rsync::{reconstruct::Reconstructor, table::HashTable},
 };
 
 use super::{
-    oneway::{Oneway, Request, Response},
-    valve::Valve,
+    repeat::Repeater,
+    request::{MetaRequest, Request, Requestor},
 };
 
 pub struct Listener<const S: usize> {
@@ -37,60 +37,56 @@ impl<const S: usize> Listener<S> {
                 let n = stream.read_to_end(&mut buf).await.unwrap();
 
                 if n != 0 {
-                    let mut valve = Valve::new(stream);
+                    let mut repeater = Repeater::new(stream);
 
-                    let req = bincode::deserialize::<Request>(&buf).unwrap();
+                    let req = bincode::deserialize::<MetaRequest>(&buf).unwrap();
                     match req {
-                        Request::ReadCell(path) => {
-                            let rc = if let Ok(sc) = srv.tree.read_by_path(&path).await {
-                                RemoteCell::from_sc(&sc, Oneway::new(self.addr))
+                        MetaRequest::ReadCell(req) => {
+                            let rc = if let Ok(sc) = srv.tree.read_by_path(&req.path).await {
+                                RemoteCell::from_sc(&sc, Requestor::new(self.addr))
                             } else {
-                                RemoteCell::empty(path)
+                                RemoteCell::empty(req.path)
                             };
                             info!("[rpc] send {:?}", rc);
-                            valve.send(&Response::Cell(rc)).await;
+                            repeater.send(&rc).await;
                         }
 
-                        Request::ReadFile(path, ver, hashed_list) => {
-                            info!("[rpc] send file {:?} with {:?}", &path, hashed_list);
-                            let sc = srv.tree.read_by_path(&path).await.unwrap();
-                            if sc.modif == ver {
-                                let file = srv.read_file_by_path(&path).await;
+                        MetaRequest::ReadFile(req) => {
+                            info!("[rpc] send file {:?} with {:?}", &req.path, req.list);
+                            let sc = srv.tree.read_by_path(&req.path).await.unwrap();
+                            if sc.modif == req.ver {
+                                let file = srv.read_file_by_path(&req.path).await;
                                 if let Ok(mut file) = file {
-                                    let hash_table = HashTable::new(&hashed_list);
+                                    let hash_table = HashTable::new(&req.list);
                                     let mut reconstructor =
                                         Reconstructor::new(&hash_table, &mut file);
                                     while let Some(delta) = reconstructor.next().await {
-                                        valve.send(&Response::File(delta)).await;
+                                        repeater.send(&InstsOrRemoteCell::Insts(delta)).await;
                                     }
                                 } else {
-                                    valve.send(&Response::File(Vec::new())).await;
+                                    repeater.send(&InstsOrRemoteCell::Insts(Vec::new())).await;
                                 };
                             } else {
                                 info!("[rpc] outdated");
-                                valve
-                                    .send(&Response::Outdated(RemoteCell::from_sc(
+                                repeater
+                                    .send(&InstsOrRemoteCell::RemoteCell(RemoteCell::from_sc(
                                         &sc,
-                                        Oneway::new(self.addr),
+                                        Requestor::new(self.addr),
                                     )))
                                     .await;
                             }
                         }
 
-                        Request::SyncCell(peer, path) => {
-                            info!("[rpc] asked to sync cell {:?}", &path);
-                            let (ino, path) = srv.get_existing_ino_by_path(&path).await;
+                        MetaRequest::SyncCell(req) => {
+                            info!("[rpc] asked to sync cell {:?}", &req.path);
+                            let (ino, path) = srv.get_existing_ino_by_path(&req.path).await;
                             let res = srv
-                                .sync(ino, RemoteCell::from_ow(path, peer.into()).await)
+                                .sync(ino, RemoteCell::from_ow(path, req.peer.into()).await)
                                 .await;
-                            if res.is_ok() {
-                                valve.send(&Response::Sync).await;
-                            } else {
-                                panic!("fail to sync");
-                            }
+                            repeater.send(&res.is_ok()).await;
                         }
                     }
-                    valve.shutdown().await;
+                    repeater.shutdown().await;
                 } else {
                     println!("Find a empty connection");
                 }

@@ -36,8 +36,8 @@ use crate::{
     fuse::meta::FileTy,
     rpc::{
         iter::Iterator,
-        oneway::{Oneway, Request, Response},
         peer::Peer,
+        request::{Request, Requestor, SyncCellRequest},
     },
     rsync::{
         hashed::{Hashed, HashedDelta},
@@ -92,11 +92,10 @@ impl<const S: usize> SyncServer<S> {
 
     pub async fn sendaway(&self, peer: &Peer, path: &PathBuf) {
         loop {
-            let mut faucet = Oneway::from(*peer)
-                .request(&Request::SyncCell(self.me, path.clone()))
+            let mut replier = Requestor::from(*peer)
+                .request(SyncCellRequest::new(self.me, path.clone()))
                 .await;
-            let res = faucet.next().await.unwrap();
-            if let Response::Sync = res {
+            if replier.next().await.unwrap() {
                 break;
             }
         }

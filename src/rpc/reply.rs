@@ -5,12 +5,12 @@ use tokio::{io::AsyncReadExt, net::TcpStream};
 
 use super::iter::Iterator;
 
-pub struct Faucet<T> {
+pub struct Replier<T> {
     stream: TcpStream,
     data: PhantomData<T>,
 }
 
-impl<T> Faucet<T> {
+impl<T> Replier<T> {
     pub fn new(stream: TcpStream) -> Self {
         Self {
             stream,
@@ -19,7 +19,7 @@ impl<T> Faucet<T> {
     }
 }
 
-impl<T> Iterator for Faucet<T>
+impl<T> Iterator for Replier<T>
 where
     T: DeserializeOwned + Send + Sync,
 {

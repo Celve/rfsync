@@ -7,7 +7,7 @@ use crate::{
     fuse::meta::FileTy,
     rpc::{
         iter::Iterator,
-        oneway::{Oneway, Request, Response},
+        request::{InstsOrRemoteCell, ReadCellRequest, ReadFileRequest, Request, Requestor},
     },
     rsync::hashed::HashedList,
 };
@@ -42,22 +42,16 @@ pub struct RemoteCell {
 
     /// The remote server.
     /// When `RemoteCell` is inited as `default`, the client would be the local host.
-    pub(crate) oneway: Oneway,
+    pub(crate) oneway: Requestor,
 }
 
 impl RemoteCell {
-    pub async fn from_ow(path: PathBuf, oneway: Oneway) -> Self {
-        let mut faucet = oneway.request(&Request::ReadCell(path)).await;
-        let res = faucet.next().await.unwrap();
-
-        if let Response::Cell(rc) = res {
-            rc
-        } else {
-            Default::default()
-        }
+    pub async fn from_ow(path: PathBuf, requestor: Requestor) -> Self {
+        let mut replier = requestor.request(ReadCellRequest::new(path)).await;
+        replier.next().await.unwrap()
     }
 
-    pub fn from_sc(sc: &SyncCell, oneway: Oneway) -> Self {
+    pub fn from_sc(sc: &SyncCell, oneway: Requestor) -> Self {
         RemoteCell {
             path: sc.path.clone(),
             modif: sc.modif.clone(),
@@ -82,23 +76,23 @@ impl RemoteCell {
         hashed_list: HashedList,
         mut file: impl AsyncWriteExt + Unpin,
     ) -> Option<RemoteCell> {
-        let mut faucet = self
+        let mut replier = self
             .oneway
-            .request(&Request::ReadFile(
+            .request(ReadFileRequest::new(
                 self.path.clone(),
                 self.modif.clone(),
                 hashed_list,
             ))
             .await;
-        while let Some(reply) = faucet.next().await {
-            if let Response::File(insts) = reply {
-                let buf = bincode::serialize(&insts).unwrap();
-                file.write_u64(buf.len() as u64).await.unwrap();
-                file.write_all(&buf).await.unwrap();
-            } else if let Response::Outdated(rc) = reply {
-                return Some(rc);
-            } else {
-                panic!("")
+        while let Some(reply) = replier.next().await {
+            match reply {
+                InstsOrRemoteCell::Insts(insts) => {
+                    let buf = bincode::serialize(&insts).unwrap();
+                    file.write_u64(buf.len() as u64).await.unwrap();
+                    file.write_all(&buf).await.unwrap();
+                }
+
+                InstsOrRemoteCell::RemoteCell(rc) => return Some(rc),
             }
         }
 

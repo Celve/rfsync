@@ -5,7 +5,7 @@ use futures_util::future::join_all;
 use libc::c_int;
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
 
-use crate::{fuse::meta::FileTy, rpc::oneway::Oneway, rsync::hashed::HashedList};
+use crate::{fuse::meta::FileTy, rpc::request::Requestor, rsync::hashed::HashedList};
 
 use super::{
     lean::LeanCelled, remote::RemoteCell, stge::CopyStge, sync::SyncCelled, time::VecTime,
@@ -29,7 +29,7 @@ pub struct CopyCell {
     pub(crate) sid: u64,
 
     /// Further fetch the `RemoteCell`.
-    pub(crate) oneway: Oneway,
+    pub(crate) oneway: Requestor,
 
     pub(crate) stge: CopyStge,
 

@@ -9,7 +9,7 @@ use tracing::info;
 use crate::{
     cell::remote::RemoteCell,
     fuse::server::SyncServer,
-    rsync::{inst::InstList, table::HashTable},
+    rsync::{inst::InstList, table::HashTable}, comm::iter::Iterator,
 };
 
 use super::oneway::{Oneway, Request, Response};

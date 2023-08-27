@@ -6,6 +6,7 @@ use std::{
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncSeekExt};
 
 use crate::{
+    comm::iter::Iterator,
     fuse::meta::PAGE_SIZE,
     rsync::{inst::Inst, roll::RollingCalculator},
 };
@@ -97,8 +98,15 @@ where
             end: false,
         }
     }
+}
 
-    pub async fn next(&mut self) -> Option<InstList> {
+impl<'a, F> Iterator for Reconstructor<'a, F>
+where
+    F: AsyncSeekExt + AsyncRead + Unpin,
+{
+    type Item = InstList;
+
+    async fn next(&mut self) -> Option<Self::Item> {
         if self.end {
             return None;
         }

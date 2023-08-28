@@ -1,4 +1,4 @@
-use std::fmt::Display;
+use std::{fmt::Display, path::PathBuf};
 
 use async_trait::async_trait;
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
@@ -10,6 +10,8 @@ pub trait DiskManager<K, V>: Send + Sync + 'static
 where
     K: Display,
 {
+    async fn new(path: PathBuf) -> Self;
+
     async fn create(&self, key: &K);
     async fn read(&self, key: &K) -> V;
     async fn write(&self, key: &K, value: &V);

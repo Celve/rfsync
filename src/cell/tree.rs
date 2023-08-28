@@ -11,7 +11,7 @@ use libc::c_int;
 use tokio::fs;
 
 use crate::{
-    buffer::pool::BufferPool,
+    buffer::{disk::DiskManager, pool::BufferPool},
     fuse::{
         consistent::Consistent,
         meta::{FileTy, FUSE_NONE_ID},

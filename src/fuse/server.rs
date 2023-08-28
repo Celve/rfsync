@@ -33,16 +33,17 @@ use crate::{
         sync::SyncCellWriteGuard,
         tree::SyncTree,
     },
+    disk::direct::PrefixDirectDiskManager,
     fuse::meta::FileTy,
     rpc::{
         iter::Iterator,
         peer::Peer,
-        request::{Request, Requestor, SyncCellRequest},
+        request::{Requestor, SyncCellRequest},
     },
     rsync::{
         hashed::{Hashed, HashedDelta},
         inst::Inst,
-        recover::Recovery,
+        recover::{RecoverDiskManager, Recovery},
     },
 };
 
@@ -515,7 +516,7 @@ impl<const S: usize> SyncServer<S> {
     }
 
     pub async fn recover(
-        recovery: &mut Recovery<'_, File>,
+        recovery: &mut Recovery<'_, File, RecoverDiskManager>,
         mut raw: impl AsyncSeekExt + AsyncReadExt + Unpin,
     ) -> usize {
         while let Ok(len) = raw.read_u64().await {
@@ -555,7 +556,11 @@ impl<const S: usize> SyncServer<S> {
                     sc.substituted(&cc);
                     let mut file = self.fs.write_file(&ino).await?;
                     let raw = cc.read().await;
-                    let mut recovery = Recovery::new(&mut file);
+                    let dm = self
+                        .fs
+                        .create_dm(PathBuf::from("recover").join(cc.cid.to_string()))
+                        .await;
+                    let mut recovery = Recovery::new(&mut file, dm);
                     let len = Self::recover(&mut recovery, raw).await;
 
                     meta.modify(SystemTime::now());
@@ -680,7 +685,11 @@ impl<const S: usize> SyncServer<S> {
 
             let mut tfile = self.fs.write_file(&ino).await?;
             let raw = cc.read().await;
-            let mut recovery = Recovery::new(&mut tfile);
+            let dm = self
+                .fs
+                .create_dm(PathBuf::from("recover").join(cc.cid.to_string()))
+                .await;
+            let mut recovery = Recovery::new(&mut tfile, dm);
             let len = Self::recover(&mut recovery, raw).await;
             tmeta.size = len as u64;
 

@@ -1,10 +1,13 @@
-use std::{ops::Deref, path::PathBuf, sync::Arc, time::SystemTime};
+use std::{fmt::Display, ops::Deref, path::PathBuf, sync::Arc, time::SystemTime};
 
 use fuser::FUSE_ROOT_ID;
 use libc::c_int;
 use tokio::fs::{self, OpenOptions};
 
-use crate::{buffer::pool::BufferPool, subset::subset::Subset};
+use crate::{
+    buffer::{disk::DiskManager, pool::BufferPool},
+    subset::subset::Subset,
+};
 
 use super::{
     consistent::Consistent,
@@ -216,6 +219,10 @@ impl<const S: usize> SyncFs<S> {
         meta.destroy().await;
         file.destroy().await;
         Ok(())
+    }
+
+    pub async fn create_dm<K: Display, V, D: DiskManager<K, V>>(&self, path: PathBuf) -> D {
+        D::new(self.path.join(path)).await
     }
 }
 

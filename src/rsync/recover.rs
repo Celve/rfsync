@@ -1,20 +1,12 @@
-use std::{collections::HashMap, io::SeekFrom};
+use std::io::SeekFrom;
 
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 
-use crate::fuse::meta::PAGE_SIZE;
+use crate::{
+    buffer::disk::DiskManager, disk::direct::PrefixDirectDiskManager, fuse::meta::PAGE_SIZE,
+};
 
 use super::inst::Inst;
-
-pub struct Recovery<'a, F>
-where
-    F: AsyncSeekExt + AsyncReadExt + AsyncWriteExt + Unpin,
-{
-    file: &'a mut F,
-    buf: Vec<u8>,
-    pub len: usize,
-    relay: HashMap<usize, Vec<u8>>,
-}
 
 pub fn byte2page_1based(offset: usize) -> usize {
     (offset + PAGE_SIZE - 1) / PAGE_SIZE
@@ -24,16 +16,30 @@ pub fn byte2page_0based(offset: usize) -> usize {
     offset / PAGE_SIZE
 }
 
-impl<'a, F> Recovery<'a, F>
+pub struct Recovery<'a, F, D>
 where
     F: AsyncSeekExt + AsyncReadExt + AsyncWriteExt + Unpin,
+    D: DiskManager<usize, Vec<u8>>,
 {
-    pub fn new<M: AsMut<F>>(file: &'a mut M) -> Self {
+    file: &'a mut F,
+    dm: D,
+    buf: Vec<u8>,
+    pub len: usize,
+}
+
+pub type RecoverDiskManager = PrefixDirectDiskManager<usize, Vec<u8>>;
+
+impl<'a, F, D> Recovery<'a, F, D>
+where
+    F: AsyncSeekExt + AsyncReadExt + AsyncWriteExt + Unpin,
+    D: DiskManager<usize, Vec<u8>>,
+{
+    pub fn new<M: AsMut<F>>(file: &'a mut M, dm: D) -> Self {
         Self {
             file: file.as_mut(),
+            dm,
             buf: vec![0; PAGE_SIZE],
             len: 0,
-            relay: HashMap::new(),
         }
     }
 
@@ -46,7 +52,7 @@ where
                 .unwrap();
             let len = self.file.read(&mut buf).await.unwrap();
             if len == PAGE_SIZE {
-                self.relay.insert(i, buf.clone());
+                self.dm.write(&i, &buf).await;
             }
         }
     }
@@ -93,10 +99,7 @@ where
                         .seek(SeekFrom::Start(self.len as u64))
                         .await
                         .unwrap();
-                    self.file
-                        .write(self.relay.get(&offset).unwrap())
-                        .await
-                        .unwrap();
+                    self.file.write(&self.dm.read(&offset).await).await.unwrap();
                 }
             }
         };

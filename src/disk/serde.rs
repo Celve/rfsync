@@ -21,15 +21,6 @@ where
     K: Display + Send + Sync,
     V: DeserializeOwned + Serialize + Send + Sync,
 {
-    pub async fn new(path: PathBuf) -> Self {
-        fs::create_dir_all(&path).await.unwrap();
-        Self {
-            path,
-            key: PhantomData,
-            value: PhantomData,
-        }
-    }
-
     pub fn path(&self, k: &K) -> PathBuf {
         self.path.join(k.to_string())
     }
@@ -41,6 +32,15 @@ where
     K: Display + Send + Sync + 'static,
     V: DeserializeOwned + Serialize + Send + Sync + 'static,
 {
+    async fn new(path: PathBuf) -> Self {
+        fs::create_dir_all(&path).await.unwrap();
+        Self {
+            path,
+            key: PhantomData,
+            value: PhantomData,
+        }
+    }
+
     async fn create(&self, key: &K) {
         File::create(&self.path(key)).await.unwrap();
     }

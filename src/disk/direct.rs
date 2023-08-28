@@ -24,15 +24,6 @@ where
     V: FromIterator<u8> + Send + Sync,
     for<'a> &'a V: IntoIterator<Item = &'a u8>,
 {
-    pub async fn new(path: PathBuf) -> Self {
-        fs::create_dir_all(&path).await.unwrap();
-        Self {
-            path,
-            key: PhantomData,
-            value: PhantomData,
-        }
-    }
-
     pub fn path(&self, k: &K) -> PathBuf {
         self.path.join(k.to_string())
     }
@@ -45,6 +36,15 @@ where
     V: FromIterator<u8> + Send + Sync + 'static,
     for<'a> &'a V: IntoIterator<Item = &'a u8>,
 {
+    async fn new(path: PathBuf) -> Self {
+        fs::create_dir_all(&path).await.unwrap();
+        Self {
+            path,
+            key: PhantomData,
+            value: PhantomData,
+        }
+    }
+
     async fn create(&self, key: &K) {
         File::create(&self.path(key)).await.unwrap();
     }

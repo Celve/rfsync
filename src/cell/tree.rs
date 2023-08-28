@@ -112,11 +112,7 @@ impl<const S: usize> SyncTree<S> {
             sid = if let Some(next_sid) = sc.children.get(name) {
                 *next_sid
             } else {
-                drop(sc);
-                let mut sc = self
-                    .write_by_id(&sid)
-                    .await
-                    .expect("fail to get the sync cell along the path");
+                let mut sc = sc.upgrade().await;
                 self.create4parent(&mut sc, name).await?.0
             };
         }

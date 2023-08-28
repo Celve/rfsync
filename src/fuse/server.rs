@@ -608,7 +608,8 @@ impl<const S: usize> SyncServer<S> {
             }
 
             for mut sc in scs.into_values() {
-                sc.substituted(&cc);
+                sc.merge(&cc);
+                sc.ty = FileTy::None;
             }
 
             for dir in dirs.into_values() {

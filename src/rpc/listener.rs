@@ -12,7 +12,7 @@ use crate::{
 
 use super::{
     repeat::Repeater,
-    request::{MetaRequest, Request, Requestor},
+    request::{MetaRequest, Requestor},
 };
 
 pub struct Listener<const S: usize> {
@@ -45,7 +45,7 @@ impl<const S: usize> Listener<S> {
                             let rc = if let Ok(sc) = srv.tree.read_by_path(&req.path).await {
                                 RemoteCell::from_sc(&sc, Requestor::new(self.addr))
                             } else {
-                                RemoteCell::empty(req.path)
+                                panic!("fail to init the sync cell along the way");
                             };
                             info!("[rpc] send {:?}", rc);
                             repeater.send(&rc).await;

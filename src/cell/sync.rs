@@ -73,6 +73,7 @@ impl SyncCell {
         self.parent = parent;
         self.path = path;
         self.sync = sync;
+        self.ty = FileTy::None;
     }
 
     pub fn empty(&mut self, sid: u64, parent: u64, path: PathBuf, ty: FileTy) {

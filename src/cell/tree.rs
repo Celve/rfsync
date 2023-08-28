@@ -61,6 +61,7 @@ impl<const S: usize> SyncTree<S> {
         self.nsid.apply(|x| x + 1).await
     }
 
+    /// Fetch the `SyncCell` if it's existing, otherwise create a new one and return.
     pub async fn create4parent(
         &self,
         parent: &mut SyncCell,
@@ -98,48 +99,37 @@ impl<const S: usize> SyncTree<S> {
         osstr.to_str().unwrap()
     }
 
-    pub async fn read_by_path(&self, path: &PathBuf) -> Result<SyncCellReadGuard<S>, c_int> {
+    pub async fn get_id_by_path(&self, path: &PathBuf) -> Result<u64, c_int> {
         let names: Vec<_> = path.components().collect();
-
-        let mut sc = self
-            .read_by_id(&FUSE_ROOT_ID)
-            .await
-            .expect("fail to get the sync cell along the path");
+        let mut sid = FUSE_ROOT_ID;
         for name in names {
             let name = Self::osstr2str(name.as_os_str());
-            let sid = sc.children.get(name).ok_or(libc::ENOENT)?;
-            sc = self
-                .read_by_id(sid)
+            let sc = self
+                .read_by_id(&sid)
                 .await
                 .expect("fail to get the sync cell along the path");
+
+            sid = if let Some(next_sid) = sc.children.get(name) {
+                *next_sid
+            } else {
+                drop(sc);
+                let mut sc = self
+                    .write_by_id(&sid)
+                    .await
+                    .expect("fail to get the sync cell along the path");
+                self.create4parent(&mut sc, name).await?.0
+            };
         }
 
-        Ok(sc)
+        Ok(sid)
+    }
+
+    pub async fn read_by_path(&self, path: &PathBuf) -> Result<SyncCellReadGuard<S>, c_int> {
+        Ok(self.read_by_id(&self.get_id_by_path(path).await?).await?)
     }
 
     pub async fn write_by_path(&self, path: &PathBuf) -> Result<SyncCellWriteGuard<S>, c_int> {
-        let mut names: Vec<_> = path.components().collect();
-        let last = names.pop();
-
-        let mut sc = self
-            .read_by_id(&FUSE_ROOT_ID)
-            .await
-            .expect("fail to get the sync cell along the path");
-        for name in names {
-            let name = Self::osstr2str(name.as_os_str());
-            let sid = sc.children.get(name).ok_or(libc::ENOENT)?;
-            sc = self
-                .read_by_id(sid)
-                .await
-                .expect("fail to get the sync cell along the path");
-        }
-
-        let name = Self::osstr2str(last.unwrap().as_os_str());
-        let sid = sc.children.get(name).ok_or(libc::ENOENT)?;
-        Ok(SyncCellWriteGuard::new(
-            self.bp.write(sid).await?,
-            self.clone(),
-        ))
+        Ok(self.write_by_id(&self.get_id_by_path(path).await?).await?)
     }
 
     pub async fn sendup(&self, sid: &u64) {

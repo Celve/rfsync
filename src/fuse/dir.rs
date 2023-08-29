@@ -27,8 +27,8 @@ impl Dir {
         Self(BTreeMap::new())
     }
 
-    pub fn insert(&mut self, name: String, ino: u64, ty: FileTy) {
-        self.0.insert(name, (ino, ty));
+    pub fn insert(&mut self, name: String, ino: u64, ty: FileTy) -> Option<(u64, FileTy)> {
+        self.0.insert(name, (ino, ty))
     }
 
     pub fn remove(&mut self, name: &str) -> Option<(u64, FileTy)> {

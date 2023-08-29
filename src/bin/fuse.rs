@@ -13,7 +13,7 @@ use rfsync::{
     fuse::{fuse::SyncFuse, server::SyncServer},
     rpc::switch_server::SwitchServer,
 };
-use tokio::io::{self, stdin, AsyncBufReadExt, BufReader};
+use tokio::io::{stdin, AsyncBufReadExt, BufReader};
 use tonic::transport::Server;
 use tracing::info;
 

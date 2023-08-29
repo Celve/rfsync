@@ -18,12 +18,12 @@ use tokio::{
     fs::File,
     io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt},
     sync::{
-        mpsc::{self, Sender},
+        mpsc::{self, Receiver, Sender},
         RwLock,
     },
 };
 use tokio_stream::wrappers::ReceiverStream;
-use tonic::{transport::Channel, Request, Response, Status, Streaming};
+use tonic::{transport::Channel, Request, Response, Status};
 use tracing::info;
 
 use crate::{
@@ -37,11 +37,8 @@ use crate::{
     },
     fuse::meta::FileTy,
     rpc::{
-        iter::Iterator,
-        read_file_reply::InstOrRemoteCell,
-        switch_client::SwitchClient,
-        switch_server::{Switch, SwitchServer},
-        FakeInst, FakeRemoteCell, ReadCellReply, ReadCellRequest, ReadFileReply, ReadFileRequest,
+        iter::Iterator, read_file_reply::InstOrRemoteCell, switch_client::SwitchClient,
+        switch_server::Switch, ReadCellReply, ReadCellRequest, ReadFileReply, ReadFileRequest,
         SyncDirReply, SyncDirRequest,
     },
     rsync::{
@@ -55,7 +52,8 @@ use crate::{
 };
 
 use super::{
-    dir::{DirReadGuard, DirWriteGuard},
+    defer::defer,
+    dir::{Dir, DirReadGuard, DirWriteGuard},
     file::{FileReadGuard, FileWriteGuard},
     fs::SyncFs,
     meta::{Meta, MetaWriteGuard, FUSE_NONE_ID, PAGE_SIZE},
@@ -500,6 +498,12 @@ impl<const S: usize> SyncServer<S> {
     }
 }
 
+pub enum Command {
+    Done,
+    Insert(String, u64, FileTy),
+    Remove(String),
+}
+
 impl<const S: usize> SyncServer<S> {
     /// Return whether the synchronization is done.
     pub async fn sync(&self, ino: u64, rc: RemoteCell) -> Result<(), c_int> {
@@ -509,17 +513,62 @@ impl<const S: usize> SyncServer<S> {
         };
 
         let cc = CopyCell::make(sid, rc, self.tree.clone(), self.stge.clone()).await?;
-        info!("[sync] copy done");
-        let (tx, _rx) = mpsc::channel(1);
-        let _ = self.copy(ino, cc, tx).await;
-        self.tree.sendup(&sid).await;
-        info!("[sync] sync done");
+        if ino == FUSE_ROOT_ID {
+            let (tx, _rx) = mpsc::channel(1);
+            let _ = self.copy(ino, cc, tx).await;
+            self.tree.sendup(&sid).await;
+        } else {
+            let pino = self.fs.read_meta(&ino).await?.parent;
+            let (mut meta, mut dir) = self.fs.modify_dir(&pino).await?;
+            let (tx, mut rx) = mpsc::channel(1);
+            let srv = self.clone();
+            let handle = tokio::spawn(async move {
+                let _ = srv.copy(ino, cc, tx).await;
+                srv.tree.sendup(&sid).await;
+            });
+
+            self.handle_command(&mut meta, &mut dir, &mut rx, 1).await?;
+
+            handle.await.unwrap();
+        }
+
+        Ok(())
+    }
+
+    pub async fn handle_command(
+        &self,
+        meta: &mut Meta,
+        dir: &mut Dir,
+        rx: &mut Receiver<Command>,
+        mut cnt: usize,
+    ) -> Result<(), c_int> {
+        while let Some(command) = rx.recv().await {
+            match command {
+                Command::Done => {
+                    cnt -= 1;
+                    if cnt == 0 {
+                        break;
+                    }
+                }
+
+                Command::Insert(name, ino, ty) => {
+                    if let Some((ino, _)) = dir.insert(name, ino, ty) {
+                        self.fs.remove_file(&ino).await?;
+                    }
+                    meta.modify(SystemTime::now());
+                }
+
+                Command::Remove(name) => {
+                    dir.remove(&name);
+                }
+            }
+        }
 
         Ok(())
     }
 
     #[async_recursion]
-    pub async fn copy(&self, ino: u64, cc: CopyCell, tx: Sender<()>) -> Result<(), c_int> {
+    pub async fn copy(&self, ino: u64, cc: CopyCell, tx: Sender<Command>) -> Result<(), c_int> {
         match cc.sop {
             SyncOp::None => self.do_nothing_for_copy(ino, cc, tx).await,
             SyncOp::Copy => self.replace_for_copy(ino, cc, tx).await,
@@ -532,11 +581,11 @@ impl<const S: usize> SyncServer<S> {
         &self,
         ino: u64,
         mut cc: CopyCell,
-        tx: Sender<()>,
+        tx: Sender<Command>,
     ) -> Result<(), c_int> {
         info!("[sync] do nothing for {:?} {:?}", cc.path, cc.modif);
         let meta = self.fs.write_meta(&ino).await;
-        tx.send(()).await.unwrap();
+        tx.send(Command::Done).await.unwrap();
         drop(tx);
 
         let meta = meta?;
@@ -586,23 +635,27 @@ impl<const S: usize> SyncServer<S> {
         &self,
         ino: u64,
         mut cc: CopyCell,
-        tx: Sender<()>,
+        tx: Sender<Command>,
     ) -> Result<(), c_int> {
-        let meta = self.fs.write_meta(&ino).await;
-        tx.send(()).await.unwrap();
-        drop(tx);
+        let deferred_tx = tx.clone();
+        let deferred = defer(async move {
+            deferred_tx.send(Command::Done).await.unwrap();
+        });
 
-        let mut meta = meta?;
+        let mut meta = self.fs.write_meta(&ino).await?;
         let mut sc = self.tree.write_by_id(&meta.sid).await?;
         if sc.modif == cc.ver {
             if sc.ty == FileTy::Dir {
                 let pino = meta.parent;
+                drop(deferred);
                 drop(meta);
                 drop(sc);
 
                 self.replace_dir_for_copy(ino, pino, cc).await
             } else {
                 if cc.ty == FileTy::File {
+                    drop(deferred);
+
                     sc.substituted(&cc);
                     let mut file = self.fs.write_file(&ino).await?;
                     let raw = cc.read().await;
@@ -621,6 +674,12 @@ impl<const S: usize> SyncServer<S> {
                     sc.substituted(&cc);
                     self.fs.destroy_file(&ino).await?;
                     meta.destroy().await;
+
+                    tx.send(Command::Remove(
+                        Self::osstr2str(cc.path.file_name().unwrap()).to_string(),
+                    ))
+                    .await
+                    .expect("fail to connect parent");
 
                     Ok(())
                 } else {
@@ -686,14 +745,14 @@ impl<const S: usize> SyncServer<S> {
         &self,
         ino: u64,
         mut cc: CopyCell,
-        tx: Sender<()>,
+        tx: Sender<Command>,
     ) -> Result<(), c_int> {
-        let meta = self.fs.write_meta(&ino).await;
-        tx.send(()).await.unwrap();
-        drop(tx);
-
-        let meta = meta?;
-        let sc = self.tree.write_by_id(&meta.sid).await?;
+        let deferred_tx = tx.clone();
+        let deferred = defer(async move {
+            deferred_tx.send(Command::Done).await.unwrap();
+        });
+        let meta = self.fs.write_meta(&ino).await?;
+        let mut sc = self.tree.write_by_id(&meta.sid).await?;
         info!(
             "[sync] resolve conflict for {:?} due to {} and {}",
             cc.path,
@@ -702,40 +761,30 @@ impl<const S: usize> SyncServer<S> {
         );
         if sc.modif == cc.ver {
             let pino = meta.parent;
-            drop(meta);
-            drop(sc);
-
-            let (mut pmeta, mut pdir) = self.fs.modify_dir(&pino).await?;
-            let mut sc = self.tree.write_by_id(&cc.sid).await?;
             sc.merge(&cc);
             drop(sc); // avoid dead lock
 
             let name = format!("{}.nosync", Self::osstr2str(cc.path.file_name().unwrap()));
             let (tino, mut tmeta) = self.fs.make_file().await?;
 
-            let mut cnt = 0;
-            let mut newname = name.clone();
-            while pdir.contains_key(&newname) {
-                cnt += 1;
-                newname = format!("{}{}", name, cnt);
-            }
-            pdir.insert(name, tino, FileTy::File);
+            tx.send(Command::Insert(name, tino, FileTy::File))
+                .await
+                .expect("fail to connect parent");
+            drop(deferred);
 
-            let now = SystemTime::now();
             tmeta.create(
                 tino,
                 pino,
                 FUSE_NONE_ID,
                 SystemTime::now(),
                 FileTy::File,
-                pmeta.perm,
-                pmeta.uid,
-                pmeta.gid,
+                meta.perm,
+                meta.uid,
+                meta.gid,
             );
-            pmeta.modify(now);
 
             let mut tfile = self.fs.write_file(&tino).await?;
-            let (meta, mut file) = self.fs.access_file(&ino).await?;
+            let mut file = self.fs.read_file(&ino).await?;
             let raw = cc.read().await;
             let mut dup = Duplication::new(&mut file, &mut tfile);
             let len = Self::duplicate(&mut dup, raw).await;
@@ -743,6 +792,7 @@ impl<const S: usize> SyncServer<S> {
 
             Ok(())
         } else {
+            drop(deferred);
             drop(meta);
             drop(sc);
             self.sync(ino, RemoteCell::from_client(&mut cc.client, cc.path).await)
@@ -754,11 +804,11 @@ impl<const S: usize> SyncServer<S> {
         &self,
         ino: u64,
         mut cc: CopyCell,
-        tx: Sender<()>,
+        tx: Sender<Command>,
     ) -> Result<(), c_int> {
         info!("[sync] recurse {:?} down", cc.path);
         let meta = self.fs.write_meta(&ino).await;
-        tx.send(()).await.unwrap();
+        tx.send(Command::Done).await.unwrap();
         drop(tx);
 
         let mut meta = meta?;
@@ -776,7 +826,7 @@ impl<const S: usize> SyncServer<S> {
             };
 
             let now = SystemTime::now();
-            let mut cnt = cc.children.len();
+            let cnt = cc.children.len();
             if cnt > 0 {
                 let (tx, mut rx) = mpsc::channel(cnt);
                 for (name, cc) in cc.children {
@@ -797,12 +847,8 @@ impl<const S: usize> SyncServer<S> {
                     tokio::spawn(async move { srv.copy(cino, cc, tx).await });
                 }
 
-                while let Some(_) = rx.recv().await {
-                    cnt -= 1;
-                    if cnt == 0 {
-                        break;
-                    }
-                }
+                self.handle_command(&mut meta, &mut dir, &mut rx, cnt)
+                    .await?;
             }
 
             Ok(())

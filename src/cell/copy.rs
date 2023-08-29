@@ -86,7 +86,6 @@ impl CopyCell {
         let sc = tree.read_by_id(&sid).await?;
         let sop = sc.calc_sync_op(&rc);
         drop(sc);
-        println!("make {:?} with {:?}", rc.path, sop);
 
         Ok(match sop {
             SyncOp::None => Self::none(sid, &rc, tree, stge).await?,

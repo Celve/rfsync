@@ -144,12 +144,12 @@ impl<const S: usize> SyncServer<S> {
         uid: u32,
         gid: u32,
     ) -> Result<Meta, c_int> {
-        let (mut pmeta, mut pdir) = self.fs.modify_dir(parent).await?;
+        let mut pmeta = self.fs.write_meta(parent).await?;
+        let mut psc = self.tree.write_by_id(&pmeta.sid).await?;
+        let mut pdir = self.fs.write_dir(parent).await?;
         let now = SystemTime::now();
 
         if !pdir.contains_key(name) {
-            let mut psc = self.tree.write_by_id(&pmeta.sid).await?;
-
             // modify children
             let (ino, mut meta) = self.fs.make_file().await?;
 
@@ -186,12 +186,12 @@ impl<const S: usize> SyncServer<S> {
         uid: u32,
         gid: u32,
     ) -> Result<Meta, c_int> {
-        let (mut pmeta, mut pdir) = self.fs.modify_dir(parent).await?;
+        let mut pmeta = self.fs.write_meta(parent).await?;
+        let mut psc = self.tree.write_by_id(&pmeta.sid).await?;
+        let mut pdir = self.fs.write_dir(parent).await?;
         let now = SystemTime::now();
 
         if !pdir.contains_key(name) {
-            let mut psc = self.tree.write_by_id(&pmeta.sid).await?;
-
             // modify children
             let (ino, mut meta) = self.fs.make_dir().await?;
 
@@ -350,6 +350,13 @@ impl<const S: usize> SyncServer<S> {
             .await
             .map_err(|_| libc::EIO)?;
         let len = file.write(bytes).await.map_err(|_| libc::EIO)?;
+        let changes = {
+            let (left, right) = (
+                offset / PAGE_SIZE as u64,
+                (offset + len as u64 - 1) / PAGE_SIZE as u64,
+            );
+            Self::calc_changes(&mut file, left, right).await?
+        };
         drop(file); // avoid dead lock
 
         // modify meta, never forget to modify the size param
@@ -359,13 +366,6 @@ impl<const S: usize> SyncServer<S> {
         // modify sync cell
         if meta.sid != FUSE_NONE_ID {
             // calculate changes for rsync
-            let (left, right) = (
-                offset / PAGE_SIZE as u64,
-                (offset + len as u64 - 1) / PAGE_SIZE as u64,
-            );
-            let mut file = self.fs.read_file(ino).await?;
-            let changes = Self::calc_changes(&mut file, left, right).await?;
-
             let mut sc = self.tree.write_by_id(&meta.sid).await?;
             sc.modify(self.mid(), self.tree.forward().await, changes);
             self.broadcast(sc).await;
@@ -474,18 +474,15 @@ impl<const S: usize> SyncServer<S> {
 impl<const S: usize> SyncServer<S> {
     /// Return whether the synchronization is done.
     pub async fn sync(&self, ino: u64, rc: RemoteCell) -> Result<(), c_int> {
-        println!("begin to sync");
         let sid = {
             let meta = self.fs.read_meta(&ino).await?;
             meta.sid
         };
 
         let cc = CopyCell::make(sid, rc, self.tree.clone(), self.stge.clone()).await?;
-        println!("copy done");
         let (tx, _rx) = mpsc::channel(1);
         let _ = self.copy(ino, cc, tx).await;
         self.tree.sendup(&sid).await;
-        println!("sync done");
 
         Ok(())
     }

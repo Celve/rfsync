@@ -34,12 +34,12 @@ fn main() {
     //     .filter_level(LevelFilter::Debug)
     //     .init();
 
-    let subscriber = tracing_subscriber::fmt()
-        .compact()
-        .with_file(true)
-        .with_line_number(true)
-        .finish();
-    tracing::subscriber::set_global_default(subscriber).unwrap();
+    // let subscriber = tracing_subscriber::fmt()
+    //     .compact()
+    //     .with_file(true)
+    //     .with_line_number(true)
+    //     .finish();
+    // tracing::subscriber::set_global_default(subscriber).unwrap();
 
     let rt = Arc::new(
         tokio::runtime::Builder::new_multi_thread()

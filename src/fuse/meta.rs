@@ -13,7 +13,7 @@ use crate::{
     disk::serde::PrefixSerdeDiskManager,
 };
 
-pub const PAGE_SIZE: usize = 4;
+pub const PAGE_SIZE: usize = 4096;
 
 pub const FUSE_NONE_ID: u64 = 0;
 

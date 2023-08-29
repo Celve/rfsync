@@ -20,7 +20,7 @@ struct Cli {
     id: usize,
 }
 
-fn create_peer(id: usize) -> Peer {
+fn create_peer(id: u64) -> Peer {
     let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 8080 + id as u16);
     Peer::new(addr, id)
 }

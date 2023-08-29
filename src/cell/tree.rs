@@ -25,15 +25,15 @@ use super::{
 
 pub struct SyncTreeInner<const S: usize> {
     pub(super) bp: BufferPool<u64, SyncCell, SyncCellDiskManager, S>,
-    pub mid: usize,
+    pub mid: u64,
     nsid: Consistent<u64>,
-    time: Consistent<usize>,
+    time: Consistent<u64>,
 }
 
 pub struct SyncTree<const S: usize>(Arc<SyncTreeInner<S>>);
 
 impl<const S: usize> SyncTree<S> {
-    pub async fn new(mid: usize, path: PathBuf, is_direct: bool) -> Self {
+    pub async fn new(mid: u64, path: PathBuf, is_direct: bool) -> Self {
         let bp = BufferPool::new(SyncCellDiskManager::new(path.join("sync")).await, is_direct);
 
         let root_sc_path = path.join("sync").join(FUSE_ROOT_ID.to_string());
@@ -53,7 +53,7 @@ impl<const S: usize> SyncTree<S> {
         }))
     }
 
-    pub async fn forward(&self) -> usize {
+    pub async fn forward(&self) -> u64 {
         self.time.apply(|x| x + 1).await
     }
 

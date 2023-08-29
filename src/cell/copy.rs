@@ -41,7 +41,7 @@ pub struct CopyCell {
     pub(crate) path: PathBuf,
     pub(crate) modif: VecTime,
     pub(crate) sync: VecTime,
-    pub(crate) crt: usize,
+    pub(crate) crt: u64,
     pub(crate) ty: FileTy,
     pub(crate) children: Vec<(String, CopyCell)>,
     pub(crate) list: HashedList,
@@ -242,7 +242,7 @@ impl LeanCelled for CopyCell {
 }
 
 impl SyncCelled for CopyCell {
-    fn crt(&self) -> usize {
+    fn crt(&self) -> u64 {
         self.crt
     }
 

@@ -30,7 +30,7 @@ pub struct RemoteCell {
     pub(crate) sync: VecTime,
 
     /// The creationg time, which is the minimum value in the modification history.
-    pub(crate) crt: usize,
+    pub(crate) crt: u64,
 
     /// Indicate the type.
     pub(crate) ty: FileTy,
@@ -115,7 +115,7 @@ impl LeanCelled for RemoteCell {
 }
 
 impl SyncCelled for RemoteCell {
-    fn crt(&self) -> usize {
+    fn crt(&self) -> u64 {
         self.crt
     }
 

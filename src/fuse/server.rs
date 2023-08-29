@@ -80,7 +80,7 @@ impl<const S: usize> SyncServer<S> {
         }
     }
 
-    pub fn mid(&self) -> usize {
+    pub fn mid(&self) -> u64 {
         self.me.id
     }
 

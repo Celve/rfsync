@@ -7,11 +7,11 @@ use crate::fuse::server::SyncServer;
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Peer {
     pub addr: SocketAddr,
-    pub id: usize,
+    pub id: u64,
 }
 
 impl Peer {
-    pub fn new(addr: SocketAddr, id: usize) -> Self {
+    pub fn new(addr: SocketAddr, id: u64) -> Self {
         Self { addr, id }
     }
 }

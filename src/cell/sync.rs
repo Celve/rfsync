@@ -35,7 +35,7 @@ pub struct SyncCell {
     pub(crate) sync: VecTime,
 
     /// The creating time, which is the minimum value in the modification history.
-    pub(crate) crt: usize,
+    pub(crate) crt: u64,
 
     /// Indicate the type.
     pub(crate) ty: FileTy,
@@ -49,7 +49,7 @@ pub struct SyncCell {
 }
 
 pub trait SyncCelled: LeanCelled {
-    fn crt(&self) -> usize;
+    fn crt(&self) -> u64;
     fn ty(&self) -> FileTy;
     fn list(&self) -> &HashedList;
 }
@@ -83,14 +83,14 @@ impl SyncCell {
         self.ty = ty;
     }
 
-    pub fn create(&mut self, mid: usize, time: usize, ty: FileTy) {
+    pub fn create(&mut self, mid: u64, time: u64, ty: FileTy) {
         self.crt = time;
         self.ty = ty;
         self.update(mid, time);
         self.list.clear();
     }
 
-    pub fn modify(&mut self, mid: usize, time: usize, delta: HashedDelta) {
+    pub fn modify(&mut self, mid: u64, time: u64, delta: HashedDelta) {
         match delta {
             HashedDelta::Modify(begin, changes) => {
                 if !changes.is_empty() {
@@ -109,13 +109,13 @@ impl SyncCell {
         self.update(mid, time);
     }
 
-    pub fn remove(&mut self, mid: usize, time: usize) {
+    pub fn remove(&mut self, mid: u64, time: u64) {
         self.ty = FileTy::None;
         self.update(mid, time);
         self.list.clear();
     }
 
-    fn update(&mut self, mid: usize, time: usize) {
+    fn update(&mut self, mid: u64, time: u64) {
         if let Some(old_time) = self.modif.get(mid) {
             if old_time < time {
                 self.modif.insert(mid, time);
@@ -207,7 +207,7 @@ impl LeanCelled for SyncCell {
 }
 
 impl SyncCelled for SyncCell {
-    fn crt(&self) -> usize {
+    fn crt(&self) -> u64 {
         self.crt
     }
 

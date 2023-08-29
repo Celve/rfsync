@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 #[derive(PartialEq, Deserialize, Serialize, Clone, Debug, Default)]
 pub struct VecTime {
     /// Map from machine id to modification/synchronization time.
-    map: HashMap<usize, usize>,
+    map: HashMap<u64, u64>,
 }
 
 impl VecTime {
@@ -17,7 +17,7 @@ impl VecTime {
     }
 
     /// Extend another `VecTime` with this one, applying the conflict value with filter.
-    pub fn union(&mut self, other: &Self, filter: impl Fn(usize, usize) -> usize) {
+    pub fn union(&mut self, other: &Self, filter: impl Fn(u64, u64) -> u64) {
         // self.mappings.extend(other.mappings.iter());
         for (k, v) in other.map.iter() {
             let old_v = self.map.get(k);
@@ -29,7 +29,7 @@ impl VecTime {
         }
     }
 
-    pub fn intersect(&mut self, other: &Self, filter: impl Fn(usize, usize) -> usize) {
+    pub fn intersect(&mut self, other: &Self, filter: impl Fn(u64, u64) -> u64) {
         self.map = self
             .map
             .iter()
@@ -38,11 +38,11 @@ impl VecTime {
     }
 
     // Insert a new mapping to the map.
-    pub fn insert(&mut self, mid: usize, time: usize) {
+    pub fn insert(&mut self, mid: u64, time: u64) {
         self.map.insert(mid, time);
     }
 
-    pub fn get(&mut self, mid: usize) -> Option<usize> {
+    pub fn get(&mut self, mid: u64) -> Option<u64> {
         self.map.get(&mid).map(|v| *v)
     }
 
@@ -85,7 +85,7 @@ impl PartialOrd for VecTime {
     }
 }
 
-impl PartialEq<VecTime> for usize {
+impl PartialEq<VecTime> for u64 {
     fn eq(&self, other: &VecTime) -> bool {
         if other.is_empty() {
             // pay attention to the empty situation
@@ -97,7 +97,7 @@ impl PartialEq<VecTime> for usize {
     }
 }
 
-impl PartialOrd<VecTime> for usize {
+impl PartialOrd<VecTime> for u64 {
     fn partial_cmp(&self, other: &VecTime) -> Option<Ordering> {
         if other.is_empty() {
             // pay attention to the empty situation

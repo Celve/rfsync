@@ -13,6 +13,7 @@ use std::{
 
 use async_recursion::async_recursion;
 use fuser::FUSE_ROOT_ID;
+use futures_util::future::join_all;
 use libc::c_int;
 use tokio::{
     fs::File,
@@ -528,6 +529,8 @@ impl<const S: usize> SyncServer<S> {
             });
 
             self.handle_command(&mut meta, &mut dir, &mut rx, 1).await?;
+            drop(meta);
+            drop(dir);
 
             handle.await.unwrap();
         }
@@ -687,6 +690,7 @@ impl<const S: usize> SyncServer<S> {
                 }
             }
         } else {
+            drop(deferred);
             drop(meta);
             drop(sc);
             self.sync(ino, RemoteCell::from_client(&mut cc.client, cc.path).await)
@@ -829,6 +833,7 @@ impl<const S: usize> SyncServer<S> {
             let cnt = cc.children.len();
             if cnt > 0 {
                 let (tx, mut rx) = mpsc::channel(cnt);
+                let mut handles = Vec::new();
                 for (name, cc) in cc.children {
                     let cino = if let Ok((cino, _)) = dir.get(&name) {
                         *cino
@@ -844,11 +849,16 @@ impl<const S: usize> SyncServer<S> {
                     };
                     let srv = self.clone();
                     let tx = tx.clone();
-                    tokio::spawn(async move { srv.copy(cino, cc, tx).await });
+                    handles.push(tokio::spawn(async move { srv.copy(cino, cc, tx).await }));
                 }
 
                 self.handle_command(&mut meta, &mut dir, &mut rx, cnt)
                     .await?;
+
+                drop(meta);
+                drop(sc);
+                drop(dir);
+                join_all(handles).await;
             }
 
             Ok(())
@@ -875,8 +885,13 @@ impl<const S: usize> Switch for SyncServer<S> {
         let mut client = self.get_client(req.addr).await;
         let (ino, path) = self.get_existing_ino_by_path(&req.path.into()).await;
         let res = self
-            .sync(ino, RemoteCell::from_client(&mut client, path).await)
+            .sync(
+                ino,
+                RemoteCell::from_client(&mut client, path.clone()).await,
+            )
             .await;
+        info!("[rpc] sync {:?} completed", &path);
+        println!("done");
 
         Ok(Response::new(SyncDirReply { done: res.is_ok() }))
     }

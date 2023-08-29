@@ -121,24 +121,17 @@ impl CopyCell {
         tree: SyncTree<S>,
         stge: CopyStge,
     ) -> Result<CopyCell, c_int> {
-        let sc = tree.read_by_id(&sid).await?;
+        let (ver, list) = {
+            let sc = tree.read_by_id(&sid).await?;
+            (sc.modif.clone(), sc.list.clone())
+        };
         let cid = stge.alloc_cid();
         stge.create(&cid).await;
         let mut file = stge.write_as_stream(&cid).await;
-        let res = if let Some(rc) = rc.read_to_stream(&sc.list, &mut file).await {
-            drop(sc);
+        let res = if let Some(rc) = rc.read_to_stream(&list, &mut file).await {
             Self::make(sid, rc, tree, stge).await
         } else {
-            Ok(CopyCell::from_rc(
-                cid,
-                sid,
-                rc,
-                SyncOp::Copy,
-                sc.modif.clone(),
-                Vec::new(),
-                stge,
-            )
-            .await)
+            Ok(CopyCell::from_rc(cid, sid, rc, SyncOp::Copy, ver, Vec::new(), stge).await)
         };
         file.flush().await.expect("fail to flush file");
 
@@ -151,26 +144,19 @@ impl CopyCell {
         tree: SyncTree<S>,
         stge: CopyStge,
     ) -> Result<CopyCell, c_int> {
-        let sc = tree.read_by_id(&sid).await?;
+        let (ver, list) = {
+            let sc = tree.read_by_id(&sid).await?;
+            (sc.modif.clone(), sc.list.clone())
+        };
         let cid = stge.alloc_cid();
         stge.create(&cid).await;
         if let Some(rc) = rc
-            .read_to_stream(&sc.list, stge.write_as_stream(&cid).await)
+            .read_to_stream(&list, stge.write_as_stream(&cid).await)
             .await
         {
-            drop(sc);
             Self::make(sid, rc, tree, stge).await
         } else {
-            Ok(CopyCell::from_rc(
-                cid,
-                sid,
-                rc,
-                SyncOp::Conflict,
-                sc.modif.clone(),
-                Vec::new(),
-                stge,
-            )
-            .await)
+            Ok(CopyCell::from_rc(cid, sid, rc, SyncOp::Conflict, ver, Vec::new(), stge).await)
         }
     }
 
@@ -188,9 +174,11 @@ impl CopyCell {
             }
         }
 
+        let children = sc.children.clone();
+        drop(sc);
         let mut handles = Vec::new();
         let mut names = VecDeque::new();
-        for (name, sid) in sc.children.iter() {
+        for (name, sid) in children.iter() {
             let sid = *sid;
             let tree = tree.clone();
             let stge = stge.clone();
@@ -207,7 +195,6 @@ impl CopyCell {
             }));
             names.push_back(name.clone());
         }
-        drop(sc);
 
         let mut children = Vec::new();
         for handle in join_all(handles).await {

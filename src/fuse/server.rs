@@ -740,6 +740,11 @@ impl<const S: usize> SyncServer<S> {
 
             Ok(())
         } else {
+            drop(pmeta);
+            drop(pdir);
+            drop(metas);
+            drop(scs);
+            drop(dirs);
             self.sync(ino, RemoteCell::from_client(&mut cc.client, cc.path).await)
                 .await
         }
@@ -891,7 +896,6 @@ impl<const S: usize> Switch for SyncServer<S> {
             )
             .await;
         info!("[rpc] sync {:?} completed", &path);
-        println!("done");
 
         Ok(Response::new(SyncDirReply { done: res.is_ok() }))
     }

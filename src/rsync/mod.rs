@@ -1,5 +1,6 @@
 //! This module provides the implementation of `rsync` algorithm.
 
+pub mod duplicate;
 pub mod hashed;
 pub mod inst;
 pub mod reconstruct;

@@ -7,7 +7,7 @@ use crate::{
     fuse::meta::FileTy,
     rpc::{
         iter::Iterator,
-        request::{InstsOrRemoteCell, ReadCellRequest, ReadFileRequest, Request, Requestor},
+        request::{InstsOrRemoteCell, ReadCellRequest, ReadFileRequest, Requestor},
     },
     rsync::hashed::HashedList,
 };

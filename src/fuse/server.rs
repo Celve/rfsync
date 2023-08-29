@@ -41,6 +41,7 @@ use crate::{
         request::{Requestor, SyncCellRequest},
     },
     rsync::{
+        duplicate::Duplication,
         hashed::{Hashed, HashedDelta},
         inst::Inst,
         recover::{RecoverDiskManager, Recovery},
@@ -193,7 +194,6 @@ impl<const S: usize> SyncServer<S> {
 
             // modify children
             let (ino, mut meta) = self.fs.make_dir().await?;
-            let mut dir = self.fs.write_dir(&ino).await?;
 
             let sid = if !name.ends_with(".nosync") {
                 let (sid, mut sc) = self.tree.create4parent(&mut psc, name).await?;
@@ -205,6 +205,7 @@ impl<const S: usize> SyncServer<S> {
                 FUSE_NONE_ID
             };
 
+            let mut dir = self.fs.write_dir(&ino).await?;
             meta.create(ino, *parent, sid, now, FileTy::Dir, perm, uid, gid);
             dir.insert(".".to_string(), ino, FileTy::File);
             dir.insert("..".to_string(), *parent, FileTy::File);
@@ -227,7 +228,7 @@ impl<const S: usize> SyncServer<S> {
 
         if let Some((ino, _)) = pdir.remove(name) {
             // modify children
-            let (mut meta, file) = self.fs.modify_file(&ino).await?;
+            let mut meta = self.fs.write_meta(&ino).await?;
 
             // modify sync cell
             if meta.sid != FUSE_NONE_ID {
@@ -238,7 +239,7 @@ impl<const S: usize> SyncServer<S> {
 
             if meta.unlink() {
                 meta.destroy().await;
-                file.destroy().await;
+                self.fs.destroy_file(&ino).await?;
             }
 
             // modify parent
@@ -260,6 +261,8 @@ impl<const S: usize> SyncServer<S> {
             let (mut meta, dir) = self.fs.modify_dir(&ino).await?;
 
             if dir.len() == 0 {
+                drop(dir);
+
                 // modify sync cell
                 if meta.sid != FUSE_NONE_ID {
                     let mut sc = self.tree.write_by_id(&meta.sid).await?;
@@ -269,7 +272,7 @@ impl<const S: usize> SyncServer<S> {
 
                 if meta.unlink() {
                     meta.destroy().await;
-                    dir.destroy().await;
+                    self.fs.destroy_dir(&ino).await?;
                 }
 
                 // modify parent
@@ -347,6 +350,7 @@ impl<const S: usize> SyncServer<S> {
             .await
             .map_err(|_| libc::EIO)?;
         let len = file.write(bytes).await.map_err(|_| libc::EIO)?;
+        drop(file); // avoid dead lock
 
         // modify meta, never forget to modify the size param
         meta.access(now);
@@ -359,6 +363,7 @@ impl<const S: usize> SyncServer<S> {
                 offset / PAGE_SIZE as u64,
                 (offset + len as u64 - 1) / PAGE_SIZE as u64,
             );
+            let mut file = self.fs.read_file(ino).await?;
             let changes = Self::calc_changes(&mut file, left, right).await?;
 
             let mut sc = self.tree.write_by_id(&meta.sid).await?;
@@ -414,6 +419,7 @@ impl<const S: usize> SyncServer<S> {
                     HashedDelta::Shrink(size as usize / PAGE_SIZE)
                 };
 
+                drop(file); // to avoid dead lock
                 if meta.sid != FUSE_NONE_ID {
                     let mut sc = self.tree.write_by_id(&meta.sid).await?;
                     sc.modify(self.mid(), self.tree.forward().await, delta);
@@ -468,15 +474,18 @@ impl<const S: usize> SyncServer<S> {
 impl<const S: usize> SyncServer<S> {
     /// Return whether the synchronization is done.
     pub async fn sync(&self, ino: u64, rc: RemoteCell) -> Result<(), c_int> {
+        println!("begin to sync");
         let sid = {
             let meta = self.fs.read_meta(&ino).await?;
             meta.sid
         };
 
         let cc = CopyCell::make(sid, rc, self.tree.clone(), self.stge.clone()).await?;
+        println!("copy done");
         let (tx, _rx) = mpsc::channel(1);
         let _ = self.copy(ino, cc, tx).await;
         self.tree.sendup(&sid).await;
+        println!("sync done");
 
         Ok(())
     }
@@ -530,6 +539,23 @@ impl<const S: usize> SyncServer<S> {
         }
 
         recovery.len
+    }
+
+    pub async fn duplicate(
+        dup: &mut Duplication<'_, File, File>,
+        mut raw: impl AsyncSeekExt + AsyncReadExt + Unpin,
+    ) -> usize {
+        while let Ok(len) = raw.read_u64().await {
+            let mut buf = vec![0; len as usize];
+            raw.read_exact(&mut buf).await.unwrap();
+
+            let insts: Vec<Inst> = bincode::deserialize(&buf).unwrap();
+            for inst in insts {
+                dup.duplicate(inst).await;
+            }
+        }
+
+        dup.len
     }
 
     pub async fn replace_for_copy(
@@ -658,9 +684,10 @@ impl<const S: usize> SyncServer<S> {
             let (mut pmeta, mut pdir) = self.fs.modify_dir(&pino).await?;
             let mut sc = self.tree.write_by_id(&cc.sid).await?;
             sc.merge(&cc);
+            drop(sc); // avoid dead lock
 
             let name = format!("{}.nosync", Self::osstr2str(cc.path.file_name().unwrap()));
-            let (ino, mut tmeta) = self.fs.make_file().await?;
+            let (tino, mut tmeta) = self.fs.make_file().await?;
 
             let mut cnt = 0;
             let mut newname = name.clone();
@@ -668,11 +695,11 @@ impl<const S: usize> SyncServer<S> {
                 cnt += 1;
                 newname = format!("{}{}", name, cnt);
             }
-            pdir.insert(name, ino, FileTy::File);
+            pdir.insert(name, tino, FileTy::File);
 
             let now = SystemTime::now();
             tmeta.create(
-                ino,
+                tino,
                 pino,
                 FUSE_NONE_ID,
                 SystemTime::now(),
@@ -683,14 +710,11 @@ impl<const S: usize> SyncServer<S> {
             );
             pmeta.modify(now);
 
-            let mut tfile = self.fs.write_file(&ino).await?;
+            let mut tfile = self.fs.write_file(&tino).await?;
+            let (meta, mut file) = self.fs.access_file(&ino).await?;
             let raw = cc.read().await;
-            let dm = self
-                .fs
-                .create_dm(PathBuf::from("recover").join(cc.cid.to_string()))
-                .await;
-            let mut recovery = Recovery::new(&mut tfile, dm);
-            let len = Self::recover(&mut recovery, raw).await;
+            let mut dup = Duplication::new(&mut file, &mut tfile);
+            let len = Self::duplicate(&mut dup, raw).await;
             tmeta.size = len as u64;
 
             Ok(())

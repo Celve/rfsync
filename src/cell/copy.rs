@@ -12,7 +12,7 @@ use super::{
     tree::SyncTree,
 };
 
-#[derive(Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
 pub enum SyncOp {
     #[default]
     None,
@@ -86,6 +86,7 @@ impl CopyCell {
         let sc = tree.read_by_id(&sid).await?;
         let sop = sc.calc_sync_op(&rc);
         drop(sc);
+        println!("make {:?} with {:?}", rc.path, sop);
 
         Ok(match sop {
             SyncOp::None => Self::none(sid, &rc, tree, stge).await?,
@@ -179,6 +180,7 @@ impl CopyCell {
         stge: CopyStge,
     ) -> Result<CopyCell, c_int> {
         let mut sc = tree.write_by_id(&sid).await?;
+        let ver = sc.modif.clone();
         for name in rc.children.iter() {
             if !sc.children.contains_key(name) {
                 tree.create4parent(&mut sc, name).await?;
@@ -196,8 +198,9 @@ impl CopyCell {
             handles.push(tokio::spawn(async move {
                 Self::make(sid, RemoteCell::from_ow(path, oneway).await, tree, stge).await
             }));
-            names.push_back(name);
+            names.push_back(name.clone());
         }
+        drop(sc);
 
         let mut children = Vec::new();
         for handle in join_all(handles).await {
@@ -207,14 +210,12 @@ impl CopyCell {
             ));
         }
 
-        // todo!("sumup");
-
         Ok(Self::from_rc(
             stge.alloc_cid(),
             sid,
             rc,
             SyncOp::Recurse,
-            sc.modif.clone(),
+            ver,
             children,
             stge,
         )

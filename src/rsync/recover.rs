@@ -80,6 +80,7 @@ where
             }
 
             Inst::Copy(offset) => {
+                let offset = offset as usize;
                 if offset >= byte2page_1based(self.len) {
                     if offset * PAGE_SIZE != self.len {
                         self.file

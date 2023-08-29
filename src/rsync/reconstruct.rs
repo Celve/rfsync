@@ -91,7 +91,7 @@ where
                             self.stack.resize(self.stack.len() - PAGE_SIZE, 0);
                             insts.push(Inst::Fill(std::mem::take(&mut self.stack)));
                         }
-                        insts.push(Inst::Copy(offset));
+                        insts.push(Inst::Copy(offset as u64));
                         self.stack = Vec::new();
                         self.calculator.clear();
                     }

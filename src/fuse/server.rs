@@ -23,6 +23,8 @@ use tokio::{
         RwLock,
     },
 };
+use tokio_stream::wrappers::ReceiverStream;
+use tonic::{transport::Channel, Request, Response, Status, Streaming};
 use tracing::info;
 
 use crate::{
@@ -31,20 +33,25 @@ use crate::{
         remote::RemoteCell,
         stge::CopyStge,
         sync::SyncCellWriteGuard,
+        time::VecTime,
         tree::SyncTree,
     },
-    disk::direct::PrefixDirectDiskManager,
     fuse::meta::FileTy,
     rpc::{
         iter::Iterator,
-        peer::Peer,
-        request::{Requestor, SyncCellRequest},
+        read_file_reply::InstOrRemoteCell,
+        switch_client::SwitchClient,
+        switch_server::{Switch, SwitchServer},
+        FakeInst, FakeRemoteCell, ReadCellReply, ReadCellRequest, ReadFileReply, ReadFileRequest,
+        SyncDirReply, SyncDirRequest,
     },
     rsync::{
         duplicate::Duplication,
-        hashed::{Hashed, HashedDelta},
+        hashed::{Hashed, HashedDelta, HashedList},
         inst::Inst,
+        reconstruct::Reconstructor,
         recover::{RecoverDiskManager, Recovery},
+        table::HashTable,
     },
 };
 
@@ -60,14 +67,15 @@ pub struct SyncServer<const S: usize> {
     pub(crate) tree: SyncTree<S>,
     pub(crate) stge: CopyStge,
     pub(crate) nfh: Arc<AtomicU64>,
-    pub(crate) me: Peer,
-    pub(crate) peers: Arc<RwLock<Vec<Peer>>>,
+    pub(crate) mid: u64,
+    pub(crate) addr: String,
+    pub(crate) peers: Arc<RwLock<HashMap<String, SwitchClient<Channel>>>>,
 }
 
 impl<const S: usize> SyncServer<S> {
-    pub async fn new(me: Peer, path: PathBuf, is_direct: bool, peers: Vec<Peer>) -> Self {
+    pub async fn new(mid: u64, addr: String, path: PathBuf, is_direct: bool) -> Self {
         let fs = SyncFs::new(path.clone(), is_direct).await;
-        let tree = SyncTree::new(me.id, path.clone(), is_direct).await;
+        let tree = SyncTree::new(mid, path.clone(), is_direct).await;
         let stge = CopyStge::new(path).await;
 
         Self {
@@ -75,44 +83,66 @@ impl<const S: usize> SyncServer<S> {
             tree,
             stge,
             nfh: Arc::new(AtomicU64::new(1)),
-            me,
-            peers: Arc::new(RwLock::new(peers)),
+            mid,
+            addr,
+            peers: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
     pub fn mid(&self) -> u64 {
-        self.me.id
+        self.mid
     }
 
-    pub fn addr(&self) -> SocketAddr {
-        self.me.addr
+    pub fn addr(&self) -> String {
+        self.addr.clone()
     }
 
     fn osstr2str(osstr: &OsStr) -> &str {
         osstr.to_str().unwrap()
     }
 
-    pub async fn sendaway(&self, peer: &Peer, path: &PathBuf) {
+    pub async fn sendaway(&self, client: &mut SwitchClient<Channel>, path: &PathBuf) {
         loop {
-            let mut replier = Requestor::from(*peer)
-                .request(SyncCellRequest::new(self.me, path.clone()))
-                .await;
-            if replier.next().await.unwrap() {
+            let req = SyncDirRequest {
+                path: path.clone().to_string_lossy().to_string(),
+                addr: self.addr(),
+            };
+            let res = client
+                .sync_dir(req)
+                .await
+                .expect("fail to sync dir")
+                .into_inner();
+
+            if res.done {
                 break;
             }
         }
     }
 
-    pub async fn join(&self, peer: Peer) {
-        self.peers.write().await.push(peer.clone());
+    pub async fn join(&self, peer: String) {
+        let mut client = SwitchClient::connect(peer.clone()).await.unwrap();
+        {
+            let mut guard = self.peers.write().await;
+            if !guard.contains_key(&peer) {
+                guard.insert(peer, client.clone());
+            }
+        }
         let srv = self.clone();
-        tokio::spawn(async move { srv.sendaway(&peer, &PathBuf::new()).await });
+        tokio::spawn(async move { srv.sendaway(&mut client, &PathBuf::new()).await });
     }
 
-    pub async fn leave(&self, target: &Peer) {
-        let mut peers = self.peers.write().await;
-        if let Some(i) = peers.iter().position(|peer| peer == target) {
-            peers.remove(i);
+    pub async fn leave(&self, target: &String) {
+        self.peers.write().await.remove(target);
+    }
+
+    pub async fn get_client(&self, addr: String) -> SwitchClient<Channel> {
+        let guard = self.peers.read().await;
+        if let Some(client) = guard.get(&addr) {
+            client.clone()
+        } else {
+            drop(guard);
+            self.join(addr.clone()).await;
+            self.peers.read().await.get(&addr).unwrap().clone()
         }
     }
 
@@ -128,11 +158,11 @@ impl<const S: usize> SyncServer<S> {
         tokio::spawn(async move { tree.sendup(&sid).await });
 
         let peers = self.peers.read().await;
-        for peer in peers.iter() {
+        for client in peers.values() {
             let srv = self.clone();
-            let peer = peer.clone();
+            let mut client = client.clone();
             let path = path.clone();
-            tokio::spawn(async move { srv.sendaway(&peer, &path).await });
+            tokio::spawn(async move { srv.sendaway(&mut client, &path).await });
         }
     }
 
@@ -480,9 +510,11 @@ impl<const S: usize> SyncServer<S> {
         };
 
         let cc = CopyCell::make(sid, rc, self.tree.clone(), self.stge.clone()).await?;
+        info!("[sync] copy done");
         let (tx, _rx) = mpsc::channel(1);
         let _ = self.copy(ino, cc, tx).await;
         self.tree.sendup(&sid).await;
+        info!("[sync] sync done");
 
         Ok(())
     }
@@ -500,7 +532,7 @@ impl<const S: usize> SyncServer<S> {
     pub async fn do_nothing_for_copy(
         &self,
         ino: u64,
-        cc: CopyCell,
+        mut cc: CopyCell,
         tx: Sender<()>,
     ) -> Result<(), c_int> {
         info!("[sync] do nothing for {:?} {:?}", cc.path, cc.modif);
@@ -516,7 +548,7 @@ impl<const S: usize> SyncServer<S> {
         } else {
             drop(meta);
             drop(sc);
-            self.sync(ino, RemoteCell::from_ow(cc.path, cc.oneway).await)
+            self.sync(ino, RemoteCell::from_client(&mut cc.client, cc.path).await)
                 .await
         }
     }
@@ -529,10 +561,8 @@ impl<const S: usize> SyncServer<S> {
             let mut buf = vec![0; len as usize];
             raw.read_exact(&mut buf).await.unwrap();
 
-            let insts: Vec<Inst> = bincode::deserialize(&buf).unwrap();
-            for inst in insts {
-                recovery.recover(inst).await;
-            }
+            let inst: Inst = bincode::deserialize(&buf).unwrap();
+            recovery.recover(inst).await;
         }
 
         recovery.len
@@ -546,10 +576,8 @@ impl<const S: usize> SyncServer<S> {
             let mut buf = vec![0; len as usize];
             raw.read_exact(&mut buf).await.unwrap();
 
-            let insts: Vec<Inst> = bincode::deserialize(&buf).unwrap();
-            for inst in insts {
-                dup.duplicate(inst).await;
-            }
+            let inst: Inst = bincode::deserialize(&buf).unwrap();
+            dup.duplicate(inst).await;
         }
 
         dup.len
@@ -558,7 +586,7 @@ impl<const S: usize> SyncServer<S> {
     pub async fn replace_for_copy(
         &self,
         ino: u64,
-        cc: CopyCell,
+        mut cc: CopyCell,
         tx: Sender<()>,
     ) -> Result<(), c_int> {
         let meta = self.fs.write_meta(&ino).await;
@@ -603,7 +631,7 @@ impl<const S: usize> SyncServer<S> {
         } else {
             drop(meta);
             drop(sc);
-            self.sync(ino, RemoteCell::from_ow(cc.path, cc.oneway).await)
+            self.sync(ino, RemoteCell::from_client(&mut cc.client, cc.path).await)
                 .await
         }
     }
@@ -612,7 +640,7 @@ impl<const S: usize> SyncServer<S> {
         &self,
         ino: u64,
         pino: u64,
-        cc: CopyCell,
+        mut cc: CopyCell,
     ) -> Result<(), c_int> {
         let (mut pmeta, mut pdir) = self.fs.modify_dir(&pino).await?;
         let now = SystemTime::now();
@@ -650,7 +678,7 @@ impl<const S: usize> SyncServer<S> {
 
             Ok(())
         } else {
-            self.sync(ino, RemoteCell::from_ow(cc.path, cc.oneway).await)
+            self.sync(ino, RemoteCell::from_client(&mut cc.client, cc.path).await)
                 .await
         }
     }
@@ -658,7 +686,7 @@ impl<const S: usize> SyncServer<S> {
     pub async fn resolve_conflict_for_copy(
         &self,
         ino: u64,
-        cc: CopyCell,
+        mut cc: CopyCell,
         tx: Sender<()>,
     ) -> Result<(), c_int> {
         let meta = self.fs.write_meta(&ino).await;
@@ -718,7 +746,7 @@ impl<const S: usize> SyncServer<S> {
         } else {
             drop(meta);
             drop(sc);
-            self.sync(ino, RemoteCell::from_ow(cc.path, cc.oneway).await)
+            self.sync(ino, RemoteCell::from_client(&mut cc.client, cc.path).await)
                 .await
         }
     }
@@ -726,7 +754,7 @@ impl<const S: usize> SyncServer<S> {
     pub async fn recurse_down_for_copy(
         &self,
         ino: u64,
-        cc: CopyCell,
+        mut cc: CopyCell,
         tx: Sender<()>,
     ) -> Result<(), c_int> {
         info!("[sync] recurse {:?} down", cc.path);
@@ -782,9 +810,86 @@ impl<const S: usize> SyncServer<S> {
         } else {
             drop(meta);
             drop(sc);
-            self.sync(ino, RemoteCell::from_ow(cc.path, cc.oneway).await)
+            self.sync(ino, RemoteCell::from_client(&mut cc.client, cc.path).await)
                 .await
         }
+    }
+}
+
+#[tonic::async_trait]
+impl<const S: usize> Switch for SyncServer<S> {
+    async fn sync_dir(
+        &self,
+        request: Request<SyncDirRequest>,
+    ) -> Result<Response<SyncDirReply>, Status> {
+        let req = request.into_inner();
+        info!(
+            "[rpc] asked to sync dir {:?} from {:?}",
+            &req.path, &req.addr
+        );
+        let mut client = self.get_client(req.addr).await;
+        let (ino, path) = self.get_existing_ino_by_path(&req.path.into()).await;
+        let res = self
+            .sync(ino, RemoteCell::from_client(&mut client, path).await)
+            .await;
+
+        Ok(Response::new(SyncDirReply { done: res.is_ok() }))
+    }
+
+    async fn read_cell(
+        &self,
+        request: Request<ReadCellRequest>,
+    ) -> Result<Response<ReadCellReply>, Status> {
+        let req = request.into_inner();
+        info!("[rpc] asked to read cell {:?}", &req.path);
+        let rc = if let Ok(sc) = self.tree.read_by_path(&req.path.into()).await {
+            sc.into_faked(self.addr())
+        } else {
+            panic!("fail to init the sync cell along the way");
+        };
+
+        Ok(Response::new(ReadCellReply { rc: Some(rc) }))
+    }
+
+    type ReadFileStream = ReceiverStream<Result<ReadFileReply, Status>>;
+
+    async fn read_file(
+        &self,
+        request: Request<ReadFileRequest>,
+    ) -> Result<Response<Self::ReadFileStream>, Status> {
+        let req = request.into_inner();
+        let (tx, rx) = mpsc::channel(128);
+        let path = req.path.into();
+        let ver = VecTime::from(&req.ver);
+        let list: HashedList = (&req.list).into();
+        info!("[rpc] asked to read file {:?}", path);
+
+        let sc = self.tree.read_by_path(&path).await.unwrap();
+        if sc.modif == ver {
+            let file = self.read_file_by_path(&path).await;
+            if let Ok(mut file) = file {
+                let hash_table = HashTable::new(&list);
+                let mut reconstructor = Reconstructor::new(&hash_table, &mut file);
+                while let Some(delta) = reconstructor.next().await {
+                    for inst in delta {
+                        let reply = ReadFileReply {
+                            inst_or_remote_cell: Some(InstOrRemoteCell::Inst(inst.into())),
+                        };
+                        if tx.send(Ok(reply)).await.is_err() {
+                            break;
+                        }
+                    }
+                }
+            }
+        } else {
+            info!("[rpc] outdated");
+            let reply = ReadFileReply {
+                inst_or_remote_cell: Some(InstOrRemoteCell::Cell(sc.into_faked(self.addr()))),
+            };
+            let _ = tx.send(Ok(reply)).await;
+        }
+
+        Ok(Response::new(ReceiverStream::new(rx)))
     }
 }
 
@@ -899,7 +1004,8 @@ impl<const S: usize> Clone for SyncServer<S> {
             tree: self.tree.clone(),
             stge: self.stge.clone(),
             nfh: self.nfh.clone(),
-            me: self.me.clone(),
+            mid: self.mid,
+            addr: self.addr.clone(),
             peers: self.peers.clone(),
         }
     }

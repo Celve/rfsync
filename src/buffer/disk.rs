@@ -17,6 +17,6 @@ where
     async fn write(&self, key: &K, value: &V);
     async fn remove(&self, key: &K);
 
-    async fn read_as_stream(&self, key: &K) -> impl AsyncSeekExt + AsyncReadExt + Unpin;
-    async fn write_as_stream(&self, key: &K) -> impl AsyncSeekExt + AsyncWriteExt + Unpin;
+    async fn read_as_file(&self, key: &K) -> impl AsyncSeekExt + AsyncReadExt + Unpin;
+    async fn write_as_file(&self, key: &K) -> impl AsyncSeekExt + AsyncWriteExt + Unpin;
 }

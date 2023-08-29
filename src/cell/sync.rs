@@ -12,6 +12,7 @@ use crate::{
     buffer::guard::{BufferReadGuard, BufferWriteGuard},
     disk::serde::PrefixSerdeDiskManager,
     fuse::meta::FileTy,
+    rpc::{FakeFileTy, FakeRemoteCell},
     rsync::hashed::{Hashed, HashedDelta, HashedList},
 };
 
@@ -188,6 +189,19 @@ impl SyncCell {
             }
         } else {
             SyncOp::None
+        }
+    }
+
+    pub fn into_faked(&self, addr: String) -> FakeRemoteCell {
+        FakeRemoteCell {
+            path: self.path.clone().to_string_lossy().to_string(),
+            modif: (&self.modif).into(),
+            sync: (&self.sync).into(),
+            crt: self.crt,
+            ty: FakeFileTy::from(self.ty).into(),
+            children: self.children.keys().map(|name| name.clone()).collect(),
+            list: (&self.list).into(),
+            addr,
         }
     }
 }

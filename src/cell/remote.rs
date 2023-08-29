@@ -1,24 +1,22 @@
 use std::{fmt::Debug, path::PathBuf};
 
-use serde::{Deserialize, Serialize};
 use tokio::io::AsyncWriteExt;
+use tonic::transport::Channel;
 
 use crate::{
     fuse::meta::FileTy,
     rpc::{
-        iter::Iterator,
-        request::{InstsOrRemoteCell, ReadCellRequest, ReadFileRequest, Requestor},
+        read_file_reply::InstOrRemoteCell, switch_client::SwitchClient, FakeFileTy, FakeRemoteCell,
+        ReadCellRequest, ReadFileRequest,
     },
-    rsync::hashed::HashedList,
+    rsync::{
+        hashed::{Hashed, HashedList},
+        inst::Inst,
+    },
 };
 
-use super::{
-    lean::LeanCelled,
-    sync::{SyncCell, SyncCelled},
-    time::VecTime,
-};
+use super::{lean::LeanCelled, sync::SyncCelled, time::VecTime};
 
-#[derive(Deserialize, Serialize, Default)]
 pub struct RemoteCell {
     /// The path of the file, relative to the root sync dir.
     pub(crate) path: PathBuf,
@@ -42,57 +40,75 @@ pub struct RemoteCell {
 
     /// The remote server.
     /// When `RemoteCell` is inited as `default`, the client would be the local host.
-    pub(crate) oneway: Requestor,
+    pub(crate) client: SwitchClient<Channel>,
 }
 
 impl RemoteCell {
-    pub async fn from_ow(path: PathBuf, requestor: Requestor) -> Self {
-        let mut replier = requestor.request(ReadCellRequest::new(path)).await;
-        replier.next().await.unwrap()
-    }
-
-    pub fn from_sc(sc: &SyncCell, oneway: Requestor) -> Self {
-        RemoteCell {
-            path: sc.path.clone(),
-            modif: sc.modif.clone(),
-            sync: sc.sync.clone(),
-            crt: sc.crt.clone(),
-            ty: sc.ty,
-            children: sc.children.iter().map(|(name, _)| name.clone()).collect(),
-            list: sc.list.clone(),
-            oneway,
-        }
-    }
-
-    pub fn empty(path: PathBuf) -> Self {
+    fn from_faked(value: FakeRemoteCell, client: SwitchClient<Channel>) -> Self {
         Self {
-            path,
-            ..Default::default()
+            path: value.path.into(),
+            modif: (&value.modif).into(),
+            sync: (&value.sync).into(),
+            crt: value.crt,
+            ty: FakeFileTy::from_i32(value.ty).unwrap().into(),
+            children: value.children,
+            list: value
+                .list
+                .iter()
+                .map(|h| Hashed::from(h))
+                .collect::<Vec<_>>()
+                .into(),
+            client,
         }
+    }
+
+    pub async fn from_client(client: &mut SwitchClient<Channel>, path: PathBuf) -> Self {
+        let req = ReadCellRequest {
+            path: path.to_string_lossy().to_string(),
+        };
+
+        Self::from_faked(
+            client
+                .read_cell(req)
+                .await
+                .expect("fail to read cell")
+                .into_inner()
+                .rc
+                .unwrap(),
+            client.clone(),
+        )
     }
 
     pub async fn read_to_stream(
-        &self,
-        hashed_list: HashedList,
+        &mut self,
+        list: &HashedList,
         mut file: impl AsyncWriteExt + Unpin,
     ) -> Option<RemoteCell> {
-        let mut replier = self
-            .oneway
-            .request(ReadFileRequest::new(
-                self.path.clone(),
-                self.modif.clone(),
-                hashed_list,
-            ))
-            .await;
-        while let Some(reply) = replier.next().await {
-            match reply {
-                InstsOrRemoteCell::Insts(insts) => {
-                    let buf = bincode::serialize(&insts).unwrap();
+        let req = ReadFileRequest {
+            path: self.path.to_string_lossy().to_string(),
+            ver: (&self.modif).into(),
+            list: list.into(),
+        };
+
+        let mut res = self
+            .client
+            .read_file(req)
+            .await
+            .expect("fail to read file")
+            .into_inner();
+
+        while let Some(reply) = res.message().await.expect("fail when messaging") {
+            let ior = reply.inst_or_remote_cell.unwrap();
+            match ior {
+                InstOrRemoteCell::Inst(inst) => {
+                    let inst = Inst::from(inst);
+                    let buf = bincode::serialize(&inst).unwrap();
                     file.write_u64(buf.len() as u64).await.unwrap();
                     file.write_all(&buf).await.unwrap();
                 }
-
-                InstsOrRemoteCell::RemoteCell(rc) => return Some(rc),
+                InstOrRemoteCell::Cell(rc) => {
+                    return Some(Self::from_faked(rc, self.client.clone()));
+                }
             }
         }
 

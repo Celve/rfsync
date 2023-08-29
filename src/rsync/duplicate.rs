@@ -44,7 +44,7 @@ where
 
             Inst::Copy(offset) => {
                 self.reader
-                    .seek(SeekFrom::Start((offset * PAGE_SIZE) as u64))
+                    .seek(SeekFrom::Start((offset as usize * PAGE_SIZE) as u64))
                     .await
                     .unwrap();
                 self.reader.read(&mut self.buf).await.unwrap();

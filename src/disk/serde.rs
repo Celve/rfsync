@@ -68,7 +68,7 @@ where
             .expect("fail to remove value from disk");
     }
 
-    async fn read_as_stream(&self, key: &K) -> File {
+    async fn read_as_file(&self, key: &K) -> File {
         OpenOptions::new()
             .read(true)
             .open(self.path(key))
@@ -76,7 +76,7 @@ where
             .expect("fail to read value from disk")
     }
 
-    async fn write_as_stream(&self, key: &K) -> File {
+    async fn write_as_file(&self, key: &K) -> File {
         OpenOptions::new()
             .write(true)
             .open(self.path(key))

@@ -3,9 +3,10 @@ use std::{collections::VecDeque, fmt::Display, path::PathBuf};
 use async_recursion::async_recursion;
 use futures_util::future::join_all;
 use libc::c_int;
-use tokio::io::{AsyncReadExt, AsyncSeekExt};
+use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
+use tonic::transport::Channel;
 
-use crate::{fuse::meta::FileTy, rpc::request::Requestor, rsync::hashed::HashedList};
+use crate::{fuse::meta::FileTy, rpc::switch_client::SwitchClient, rsync::hashed::HashedList};
 
 use super::{
     lean::LeanCelled, remote::RemoteCell, stge::CopyStge, sync::SyncCelled, time::VecTime,
@@ -29,7 +30,7 @@ pub struct CopyCell {
     pub(crate) sid: u64,
 
     /// Further fetch the `RemoteCell`.
-    pub(crate) oneway: Requestor,
+    pub(crate) client: SwitchClient<Channel>,
 
     pub(crate) stge: CopyStge,
 
@@ -53,7 +54,7 @@ impl CopyCell {
     async fn from_rc(
         cid: u64,
         sid: u64,
-        rc: &RemoteCell,
+        rc: RemoteCell,
         sop: SyncOp,
         ver: VecTime,
         children: Vec<(String, CopyCell)>,
@@ -62,16 +63,16 @@ impl CopyCell {
         CopyCell {
             cid,
             sid,
-            oneway: rc.oneway,
+            client: rc.client.clone(),
             stge,
             sop,
             ver,
-            path: rc.path.clone(),
-            modif: rc.modif.clone(),
-            sync: rc.sync.clone(),
+            path: rc.path,
+            modif: rc.modif,
+            sync: rc.sync,
             crt: rc.crt,
             ty: rc.ty,
-            list: rc.list.clone(),
+            list: rc.list,
             children,
         }
     }
@@ -88,16 +89,16 @@ impl CopyCell {
         drop(sc);
 
         Ok(match sop {
-            SyncOp::None => Self::none(sid, &rc, tree, stge).await?,
-            SyncOp::Copy => Self::copy(sid, &rc, tree, stge).await?,
-            SyncOp::Conflict => Self::conflict(sid, &rc, tree, stge).await?,
-            SyncOp::Recurse => Self::recurse(sid, &rc, tree, stge).await?,
+            SyncOp::None => Self::none(sid, rc, tree, stge).await?,
+            SyncOp::Copy => Self::copy(sid, rc, tree, stge).await?,
+            SyncOp::Conflict => Self::conflict(sid, rc, tree, stge).await?,
+            SyncOp::Recurse => Self::recurse(sid, rc, tree, stge).await?,
         })
     }
 
     pub async fn none<const S: usize>(
         sid: u64,
-        rc: &RemoteCell,
+        rc: RemoteCell,
         tree: SyncTree<S>,
         stge: CopyStge,
     ) -> Result<CopyCell, c_int> {
@@ -116,17 +117,15 @@ impl CopyCell {
 
     pub async fn copy<const S: usize>(
         sid: u64,
-        rc: &RemoteCell,
+        mut rc: RemoteCell,
         tree: SyncTree<S>,
         stge: CopyStge,
     ) -> Result<CopyCell, c_int> {
         let sc = tree.read_by_id(&sid).await?;
         let cid = stge.alloc_cid();
         stge.create(&cid).await;
-        if let Some(rc) = rc
-            .read_to_stream(sc.list.clone(), stge.write_as_stream(&cid).await)
-            .await
-        {
+        let mut file = stge.write_as_stream(&cid).await;
+        let res = if let Some(rc) = rc.read_to_stream(&sc.list, &mut file).await {
             drop(sc);
             Self::make(sid, rc, tree, stge).await
         } else {
@@ -140,12 +139,15 @@ impl CopyCell {
                 stge,
             )
             .await)
-        }
+        };
+        file.flush().await.expect("fail to flush file");
+
+        res
     }
 
     pub async fn conflict<const S: usize>(
         sid: u64,
-        rc: &RemoteCell,
+        mut rc: RemoteCell,
         tree: SyncTree<S>,
         stge: CopyStge,
     ) -> Result<CopyCell, c_int> {
@@ -153,7 +155,7 @@ impl CopyCell {
         let cid = stge.alloc_cid();
         stge.create(&cid).await;
         if let Some(rc) = rc
-            .read_to_stream(sc.list.clone(), stge.write_as_stream(&cid).await)
+            .read_to_stream(&sc.list, stge.write_as_stream(&cid).await)
             .await
         {
             drop(sc);
@@ -174,7 +176,7 @@ impl CopyCell {
 
     pub async fn recurse<const S: usize>(
         sid: u64,
-        rc: &RemoteCell,
+        rc: RemoteCell,
         tree: SyncTree<S>,
         stge: CopyStge,
     ) -> Result<CopyCell, c_int> {
@@ -193,9 +195,15 @@ impl CopyCell {
             let tree = tree.clone();
             let stge = stge.clone();
             let path = rc.path.join(name);
-            let oneway = rc.oneway.clone();
+            let mut client = rc.client.clone();
             handles.push(tokio::spawn(async move {
-                Self::make(sid, RemoteCell::from_ow(path, oneway).await, tree, stge).await
+                Self::make(
+                    sid,
+                    RemoteCell::from_client(&mut client, path).await,
+                    tree,
+                    stge,
+                )
+                .await
             }));
             names.push_back(name.clone());
         }
@@ -222,7 +230,7 @@ impl CopyCell {
     }
 
     pub async fn read(&self) -> impl AsyncSeekExt + AsyncReadExt + Unpin {
-        self.stge.read_as_stream(&self.cid).await
+        self.stge.read_as_buf_reader(&self.cid).await
     }
 }
 

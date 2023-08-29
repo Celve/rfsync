@@ -116,3 +116,17 @@ impl PartialOrd<VecTime> for u64 {
         }
     }
 }
+
+impl From<&VecTime> for HashMap<u64, u64> {
+    fn from(value: &VecTime) -> Self {
+        value.map.clone()
+    }
+}
+
+impl From<&HashMap<u64, u64>> for VecTime {
+    fn from(value: &HashMap<u64, u64>) -> Self {
+        Self {
+            map: value.into_iter().map(|(k, v)| (*k, *v)).collect(),
+        }
+    }
+}

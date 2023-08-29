@@ -6,7 +6,7 @@ use std::{
     },
 };
 
-use tokio::fs::File;
+use tokio::{fs::File, io::{BufReader, BufWriter}};
 
 use crate::{buffer::disk::DiskManager, disk::serde::PrefixSerdeDiskManager, rsync::inst::Inst};
 
@@ -45,12 +45,12 @@ impl CopyStge {
         self.dm.remove(cid).await;
     }
 
-    pub async fn read_as_stream(&self, cid: &u64) -> File {
-        self.dm.read_as_stream(cid).await
+    pub async fn read_as_buf_reader(&self, cid: &u64) -> BufReader<File> {
+        BufReader::new(self.dm.read_as_file(cid).await)
     }
 
-    pub async fn write_as_stream(&self, cid: &u64) -> File {
-        self.dm.write_as_stream(cid).await
+    pub async fn write_as_stream(&self, cid: &u64) -> BufWriter<File> {
+        BufWriter::new(self.dm.write_as_file(cid).await)
     }
 }
 

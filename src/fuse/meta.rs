@@ -11,6 +11,7 @@ use crate::{
     buffer::guard::{BufferReadGuard, BufferWriteGuard},
     cell::sync::SyncCelled,
     disk::serde::PrefixSerdeDiskManager,
+    rpc::FakeFileTy,
 };
 
 pub const PAGE_SIZE: usize = 4096;
@@ -23,6 +24,50 @@ pub enum FileTy {
     None,
     File,
     Dir,
+}
+
+impl Into<FileType> for FileTy {
+    fn into(self) -> FileType {
+        match self {
+            FileTy::File => FileType::RegularFile,
+            FileTy::Dir => FileType::Directory,
+            FileTy::None => panic!("file type is none"),
+        }
+    }
+}
+
+impl From<FileTy> for FakeFileTy {
+    fn from(value: FileTy) -> Self {
+        match value {
+            FileTy::None => FakeFileTy::FileTyNone,
+            FileTy::File => FakeFileTy::FileTyFile,
+            FileTy::Dir => FakeFileTy::FileTyDir,
+        }
+    }
+}
+
+impl From<FakeFileTy> for FileTy {
+    fn from(value: FakeFileTy) -> Self {
+        match value {
+            FakeFileTy::FileTyNone => FileTy::None,
+            FakeFileTy::FileTyFile => FileTy::File,
+            FakeFileTy::FileTyDir => FileTy::Dir,
+        }
+    }
+}
+
+impl Display for FileTy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{}",
+            match self {
+                FileTy::None => "None",
+                FileTy::File => "File",
+                FileTy::Dir => "Dir",
+            }
+        )
+    }
 }
 
 /// When `Meta` is inited as `default`, all of its time would be assigned with `UNIX_EPOCH` constant.
@@ -57,30 +102,6 @@ pub type MetaDiskManager = PrefixSerdeDiskManager<u64, Meta>;
 pub struct MetaReadGuard<'a, const S: usize>(BufferReadGuard<'a, u64, Meta, MetaDiskManager, S>);
 
 pub struct MetaWriteGuard<'a, const S: usize>(BufferWriteGuard<'a, u64, Meta, MetaDiskManager, S>);
-
-impl Into<FileType> for FileTy {
-    fn into(self) -> FileType {
-        match self {
-            FileTy::File => FileType::RegularFile,
-            FileTy::Dir => FileType::Directory,
-            FileTy::None => panic!("file type is none"),
-        }
-    }
-}
-
-impl Display for FileTy {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "{}",
-            match self {
-                FileTy::None => "None",
-                FileTy::File => "File",
-                FileTy::Dir => "Dir",
-            }
-        )
-    }
-}
 
 impl Meta {
     pub fn create(

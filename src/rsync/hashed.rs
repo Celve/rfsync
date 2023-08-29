@@ -7,7 +7,7 @@ use md5::Digest;
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
 
-use crate::fuse::meta::PAGE_SIZE;
+use crate::{fuse::meta::PAGE_SIZE, rpc::FakeHashed};
 
 use super::roll::{self, RollingChecksum};
 
@@ -38,6 +38,30 @@ impl Default for Md5 {
     }
 }
 
+impl From<[u64; 2]> for Md5 {
+    fn from(value: [u64; 2]) -> Self {
+        let mut bytes = [0u8; 16];
+        let (left, right) = bytes.split_at_mut(8);
+        left.copy_from_slice(&value[0].to_le_bytes());
+        right.copy_from_slice(&value[1].to_le_bytes());
+        Self(bytes)
+    }
+}
+
+impl From<Md5> for [u64; 2] {
+    fn from(mut value: Md5) -> Self {
+        let (left, right) = value.0.split_at(8);
+        let (mut left_bytes, mut right_bytes) = ([0u8; 8], [0u8; 8]);
+        left_bytes.copy_from_slice(left);
+        right_bytes.copy_from_slice(right);
+
+        [
+            u64::from_le_bytes(left_bytes),
+            u64::from_le_bytes(right_bytes),
+        ]
+    }
+}
+
 #[derive(PartialEq, Eq, Deserialize, Serialize, Clone, Default, Debug)]
 pub struct Hashed {
     pub rolling: RollingChecksum,
@@ -49,6 +73,27 @@ impl Hashed {
         let rolling = roll::compute(page);
         let md5 = md5::compute(page).into();
         Self { rolling, md5 }
+    }
+}
+
+impl From<&Hashed> for FakeHashed {
+    fn from(value: &Hashed) -> Self {
+        let md5 = <[u64; 2]>::from(value.md5);
+        Self {
+            small: value.rolling.into(),
+            big1: md5[0],
+            big2: md5[1],
+        }
+    }
+}
+
+impl From<&FakeHashed> for Hashed {
+    fn from(value: &FakeHashed) -> Self {
+        let md5 = [value.big1, value.big2];
+        Self {
+            rolling: value.small.into(),
+            md5: md5.into(),
+        }
     }
 }
 
@@ -107,5 +152,29 @@ impl<'a> IntoIterator for &'a HashedList {
 
     fn into_iter(self) -> Self::IntoIter {
         (&self.0).into_iter()
+    }
+}
+
+impl From<Vec<Hashed>> for HashedList {
+    fn from(value: Vec<Hashed>) -> Self {
+        Self(value)
+    }
+}
+
+impl From<&Vec<FakeHashed>> for HashedList {
+    fn from(value: &Vec<FakeHashed>) -> Self {
+        Self(value.iter().map(|h| h.into()).collect())
+    }
+}
+
+impl From<HashedList> for Vec<Hashed> {
+    fn from(value: HashedList) -> Self {
+        value.0
+    }
+}
+
+impl From<&HashedList> for Vec<FakeHashed> {
+    fn from(value: &HashedList) -> Self {
+        value.0.iter().map(|h| h.into()).collect()
     }
 }

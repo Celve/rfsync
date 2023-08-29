@@ -1,0 +1,69 @@
+syntax = "proto3";
+package rfsync;
+
+service Switch {
+  rpc SyncDir(SyncDirRequest) returns (SyncDirReply);
+  rpc ReadCell(ReadCellRequest) returns (ReadCellReply);
+  rpc ReadFile(ReadFileRequest) returns (stream ReadFileReply);
+}
+
+message SyncDirRequest {
+  string path = 1;
+  string addr = 2;
+}
+
+message SyncDirReply { bool done = 1; }
+
+message FakeHashed {
+  uint32 small = 1;
+  uint64 big1 = 2;
+  uint64 big2 = 3;
+}
+
+message FakeInst {
+  oneof FillOrCopy {
+    bytes data = 1;
+    uint64 offset = 2;
+  }
+}
+
+enum FakeFileTy {
+  FILE_TY_NONE = 0;
+  FILE_TY_FILE = 1;
+  FILE_TY_DIR = 2;
+}
+
+enum FakeSyncOp {
+  SYNC_OP_NONE = 0;
+  SYNC_OP_COPY = 1;
+  SYNC_OP_CONFLICT = 2;
+  SYNC_OP_RECURSE = 3;
+}
+
+message FakeRemoteCell {
+  string path = 1;
+  map<uint64, uint64> modif = 2;
+  map<uint64, uint64> sync = 3;
+  uint64 crt = 4;
+  FakeFileTy ty = 5;
+  repeated string children = 8;
+  repeated FakeHashed list = 9;
+  string addr = 10;
+}
+
+message ReadCellRequest { string path = 1; }
+
+message ReadCellReply { FakeRemoteCell rc = 1; }
+
+message ReadFileRequest {
+  string path = 1;
+  map<uint64, uint64> ver = 2;
+  repeated FakeHashed list = 3;
+}
+
+message ReadFileReply {
+  oneof InstOrRemoteCell {
+    FakeInst inst = 1;
+    FakeRemoteCell cell = 2;
+  }
+}

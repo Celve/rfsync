@@ -2,7 +2,6 @@ use std::{
     collections::{HashMap, VecDeque},
     ffi::OsStr,
     io::SeekFrom,
-    net::SocketAddr,
     ops::Deref,
     path::PathBuf,
     sync::{
@@ -620,7 +619,7 @@ impl<const S: usize> SyncServer<S> {
                     Ok(())
                 } else if cc.ty == FileTy::None {
                     sc.substituted(&cc);
-                    self.fs.remove_file(&ino).await?;
+                    self.fs.destroy_file(&ino).await?;
                     meta.destroy().await;
 
                     Ok(())

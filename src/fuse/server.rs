@@ -1,4 +1,5 @@
 use std::{
+    cmp::{max, min},
     collections::{HashMap, VecDeque},
     ffi::OsStr,
     io::SeekFrom,
@@ -689,12 +690,14 @@ impl<const S: usize> SyncServer<S> {
                     unreachable!()
                 }
             }
-        } else {
+        } else if sc.calc_sync_op(&cc) != SyncOp::None {
             drop(deferred);
             drop(meta);
             drop(sc);
             self.sync(ino, RemoteCell::from_client(&mut cc.client, cc.path).await)
                 .await
+        } else {
+            Ok(())
         }
     }
 
@@ -800,12 +803,14 @@ impl<const S: usize> SyncServer<S> {
             tmeta.size = len as u64;
 
             Ok(())
-        } else {
+        } else if sc.calc_sync_op(&cc) != SyncOp::None {
             drop(deferred);
             drop(meta);
             drop(sc);
             self.sync(ino, RemoteCell::from_client(&mut cc.client, cc.path).await)
                 .await
+        } else {
+            Ok(())
         }
     }
 
@@ -821,7 +826,8 @@ impl<const S: usize> SyncServer<S> {
         drop(tx);
 
         let mut meta = meta?;
-        let mut sc = self.tree.write_by_id(&meta.sid).await?;
+        let sid = meta.sid;
+        let mut sc = self.tree.write_by_id(&sid).await?;
         if sc.modif == cc.ver {
             sc.substituted(&cc);
 
@@ -866,12 +872,24 @@ impl<const S: usize> SyncServer<S> {
                 join_all(handles).await;
             }
 
+            let mut sc = self.tree.write_by_id(&sid).await?;
+            sc.modif = VecTime::new();
+            sc.sync = VecTime::new();
+            let children: Vec<u64> = sc.children.values().map(|sid| *sid).collect();
+            for csid in children {
+                let csc = self.tree.read_by_id(&csid).await?;
+                sc.modif.union(&csc.modif, max);
+                sc.sync.intersect(&csc.sync, min);
+            }
+
             Ok(())
-        } else {
+        } else if sc.calc_sync_op(&cc) != SyncOp::None {
             drop(meta);
             drop(sc);
             self.sync(ino, RemoteCell::from_client(&mut cc.client, cc.path).await)
                 .await
+        } else {
+            Ok(())
         }
     }
 }

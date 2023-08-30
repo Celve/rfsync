@@ -129,11 +129,11 @@ impl SyncCell {
     }
 
     pub fn merge(&mut self, other: &impl SyncCelled) {
-        self.modif = other.modif().clone();
         self.sync.union(other.sync(), max);
     }
 
     pub fn substituted(&mut self, other: &impl SyncCelled) {
+        self.modif = other.modif().clone();
         self.merge(other);
         self.crt = other.crt();
         self.ty = other.ty();

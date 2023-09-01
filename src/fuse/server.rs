@@ -40,8 +40,8 @@ use crate::{
     fuse::meta::FileTy,
     rpc::{
         iter::Iterator, read_file_reply::InstOrRemoteCell, switch_client::SwitchClient,
-        switch_server::Switch, ReadCellReply, ReadCellRequest, ReadFileReply, ReadFileRequest,
-        SyncDirReply, SyncDirRequest,
+        switch_server::Switch, JoinReply, JoinRequest, ReadCellReply, ReadCellRequest,
+        ReadFileReply, ReadFileRequest, SyncDirReply, SyncDirRequest,
     },
     rsync::{
         duplicate::Duplication,
@@ -106,19 +106,19 @@ impl<const S: usize> SyncServer<S> {
                 path: path.clone().to_string_lossy().to_string(),
                 addr: self.addr(),
             };
-            let res = client
-                .sync_dir(req)
-                .await
-                .expect("fail to sync dir")
-                .into_inner();
+            let res = client.sync_dir(req).await;
 
-            if res.done {
+            if let Ok(reply) = res {
+                if reply.into_inner().done {
+                    break;
+                }
+            } else {
                 break;
             }
         }
     }
 
-    pub async fn join(&self, peer: String) {
+    pub async fn join_server(&self, peer: String) {
         let mut client = SwitchClient::connect(peer.clone()).await.unwrap();
         {
             let mut guard = self.peers.write().await;
@@ -140,8 +140,18 @@ impl<const S: usize> SyncServer<S> {
             client.clone()
         } else {
             drop(guard);
-            self.join(addr.clone()).await;
+            self.join_server(addr.clone()).await;
             self.peers.read().await.get(&addr).unwrap().clone()
+        }
+    }
+
+    pub async fn flow(&self, path: PathBuf) {
+        let peers = self.peers.read().await;
+        for client in peers.values() {
+            let srv = self.clone();
+            let mut client = client.clone();
+            let path = path.clone();
+            tokio::spawn(async move { srv.sendaway(&mut client, &path).await });
         }
     }
 
@@ -155,14 +165,7 @@ impl<const S: usize> SyncServer<S> {
         drop(sc);
         let tree = self.tree.clone();
         tokio::spawn(async move { tree.sendup(&sid).await });
-
-        let peers = self.peers.read().await;
-        for client in peers.values() {
-            let srv = self.clone();
-            let mut client = client.clone();
-            let path = path.clone();
-            tokio::spawn(async move { srv.sendaway(&mut client, &path).await });
-        }
+        self.flow(path).await;
     }
 
     pub async fn mknod(
@@ -972,6 +975,11 @@ impl<const S: usize> Switch for SyncServer<S> {
         }
 
         Ok(Response::new(ReceiverStream::new(rx)))
+    }
+
+    async fn join(&self, request: Request<JoinRequest>) -> Result<Response<JoinReply>, Status> {
+        self.join_server(request.into_inner().addr).await;
+        Ok(Response::new(JoinReply { done: true }))
     }
 }
 

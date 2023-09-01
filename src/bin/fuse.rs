@@ -81,7 +81,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         let mut lines = BufReader::new(stdin()).lines();
         while let Some(input) = lines.next_line().await? {
             let id = input.parse::<u64>().unwrap();
-            srv.join(create_http(id).to_string()).await;
+            srv.join_server(create_http(id).to_string()).await;
         }
 
         Ok::<(), tokio::io::Error>(())

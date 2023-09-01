@@ -5,6 +5,7 @@ service Switch {
   rpc SyncDir(SyncDirRequest) returns (SyncDirReply);
   rpc ReadCell(ReadCellRequest) returns (ReadCellReply);
   rpc ReadFile(ReadFileRequest) returns (stream ReadFileReply);
+  rpc Join(JoinRequest) returns (JoinReply);
 }
 
 message SyncDirRequest {
@@ -67,3 +68,7 @@ message ReadFileReply {
     FakeRemoteCell cell = 2;
   }
 }
+
+message JoinRequest { string addr = 1; }
+
+message JoinReply { bool done = 1; }
